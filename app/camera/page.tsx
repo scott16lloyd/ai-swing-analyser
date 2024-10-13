@@ -11,6 +11,7 @@ export default function VideoCapturePage() {
   const [isRecording, setIsRecording] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [recordedVideoBlob, setRecordedVideoBlob] = useState<Blob | null>(null);
+  const [uploading, setUploading] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
@@ -26,7 +27,7 @@ export default function VideoCapturePage() {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: cameraFacing },
-        audio: true,
+        audio: false,
       });
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
@@ -52,6 +53,43 @@ export default function VideoCapturePage() {
 
   const toggleCamera = () => {
     setCameraFacing((prev) => (prev === 'user' ? 'environment' : 'user'));
+  };
+
+  const uploadVideo = async () => {
+    if (!recordedVideoBlob) {
+      return;
+    }
+    setUploading(true);
+
+    const reader = new FileReader();
+    reader.readAsDataURL(recordedVideoBlob);
+    reader.onloadend = async () => {
+      const base64data = reader.result;
+      try {
+        const response = await fetch('/api/upload-video', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            videoBlob: base64data,
+            fileName: 'captured-video.webm',
+          }),
+        });
+
+        const data = await response.json();
+        if (response.ok) {
+          alert('Video uploaded successfully!');
+        } else {
+          alert('Error uploading video. Please try again.');
+        }
+      } catch (error) {
+        console.error('Error uploading video:', error);
+        alert('Error uploading video. Please try again.');
+      } finally {
+        setUploading(false);
+      }
+    };
   };
 
   const startRecording = () => {
@@ -112,7 +150,7 @@ export default function VideoCapturePage() {
             autoPlay
             playsInline
             muted
-            className="h-full w-full object-cover"
+            className="h-full w-full object-cover rounded-xl aspect-w-16 aspect-h-9"
             style={{
               transform: cameraFacing === 'user' ? 'scaleX(-1)' : 'none', // Mirror front camera
             }}
@@ -147,9 +185,10 @@ export default function VideoCapturePage() {
         {recordedVideoBlob && (
           <Button
             className="rounded-full p-3 bg-transparent border-2 border-white hover:bg-white/20 transition-colors ml-4"
-            onClick={downloadVideo}
+            onClick={uploadVideo}
+            disabled={uploading}
           >
-            <Download className="h-6 w-6" />
+            {uploading ? 'Uploading...' : 'Upload'}
           </Button>
         )}
       </div>
