@@ -113,6 +113,9 @@ export default function VideoCapturePage() {
             playsInline
             muted
             className="h-full w-full object-cover"
+            style={{
+              transform: cameraFacing === 'user' ? 'scaleX(-1)' : 'none', // Mirror front camera
+            }}
           />
         )}
       </div>
