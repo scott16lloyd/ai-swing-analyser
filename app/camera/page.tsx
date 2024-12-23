@@ -2,7 +2,8 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
-import { AlertCircle, CameraIcon, Download } from 'lucide-react';
+import { AlertCircle, CameraIcon, Download, Upload } from 'lucide-react';
+import { useToast } from '@/hooks/use-toast';
 
 export default function VideoCapturePage() {
   const [cameraFacing, setCameraFacing] = useState<'user' | 'environment'>(
@@ -15,20 +16,33 @@ export default function VideoCapturePage() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
+  const [recordingDuration, setRecordingDuration] = useState(0);
+  const recordingTimerRef = useRef<NodeJS.Timeout>();
+
+  const { toast } = useToast();
 
   useEffect(() => {
     startCamera();
     return () => {
       stopCamera();
+      if (recordingTimerRef.current) {
+        clearInterval(recordingTimerRef.current);
+      }
     };
   }, [cameraFacing]);
 
   const startCamera = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: cameraFacing },
-        audio: false,
-      });
+      const constraints = {
+        video: {
+          facingMode: cameraFacing,
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
+        },
+        audio: true, // Enable audio recording
+      };
+
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
       }
@@ -44,8 +58,7 @@ export default function VideoCapturePage() {
 
   const stopCamera = () => {
     const stream = videoRef.current?.srcObject as MediaStream;
-    const tracks = stream?.getTracks();
-    tracks?.forEach((track) => track.stop());
+    stream?.getTracks().forEach((track) => track.stop());
     if (videoRef.current) {
       videoRef.current.srcObject = null;
     }
@@ -56,81 +69,110 @@ export default function VideoCapturePage() {
   };
 
   const uploadVideo = async () => {
-    if (!recordedVideoBlob) {
-      return;
-    }
+    if (!recordedVideoBlob) return;
+
     setUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append('video', recordedVideoBlob, 'captured-video.webm');
 
-    const reader = new FileReader();
-    reader.readAsDataURL(recordedVideoBlob);
-    reader.onloadend = async () => {
-      const base64data = reader.result;
-      try {
-        const response = await fetch('/api/upload-video', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            videoBlob: base64data,
-            fileName: 'captured-video.webm',
-          }),
-        });
+      const response = await fetch('/api/upload-video', {
+        method: 'POST',
+        body: formData,
+      });
 
-        const data = await response.json();
-        if (response.ok) {
-          alert('Video uploaded successfully!');
-        } else {
-          alert('Error uploading video. Please try again.');
-        }
-      } catch (error) {
-        console.error('Error uploading video:', error);
-        alert('Error uploading video. Please try again.');
-      } finally {
-        setUploading(false);
-      }
-    };
+      if (!response.ok) throw new Error('Upload failed');
+
+      toast({
+        title: 'Success',
+        description: 'Video uploaded successfully!',
+        variant: 'default',
+      });
+    } catch (error) {
+      console.error('Error uploading video:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to upload video. Please try again.',
+        variant: 'destructive',
+      });
+    } finally {
+      setUploading(false);
+    }
   };
 
   const startRecording = () => {
     setRecordedVideoBlob(null);
+    setRecordingDuration(0);
+
     const stream = videoRef.current?.srcObject as MediaStream;
-    if (stream) {
-      const mediaRecorder = new MediaRecorder(stream);
+    if (!stream) return;
+
+    try {
+      const mediaRecorder = new MediaRecorder(stream, {
+        mimeType: 'video/webm;codecs=vp8,opus',
+      });
+
       mediaRecorderRef.current = mediaRecorder;
       chunksRef.current = [];
+
       mediaRecorder.ondataavailable = (event) => {
         if (event.data.size > 0) {
           chunksRef.current.push(event.data);
         }
       };
+
       mediaRecorder.onstop = () => {
         const blob = new Blob(chunksRef.current, { type: 'video/webm' });
         setRecordedVideoBlob(blob);
+        if (recordingTimerRef.current) {
+          clearInterval(recordingTimerRef.current);
+        }
       };
-      mediaRecorder.start();
+
+      mediaRecorder.start(1000); // Capture data every second
       setIsRecording(true);
+
+      // Start recording duration timer
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingDuration((prev) => prev + 1);
+      }, 1000);
+    } catch (err) {
+      console.error('Error starting recording:', err);
+      toast({
+        title: 'Error',
+        description: 'Failed to start recording. Please try again.',
+        variant: 'destructive',
+      });
     }
   };
 
   const stopRecording = () => {
-    if (mediaRecorderRef.current) {
+    if (
+      mediaRecorderRef.current &&
+      mediaRecorderRef.current.state !== 'inactive'
+    ) {
       mediaRecorderRef.current.stop();
       setIsRecording(false);
     }
   };
 
   const downloadVideo = () => {
-    if (recordedVideoBlob) {
-      const url = URL.createObjectURL(recordedVideoBlob);
-      const a = document.createElement('a');
-      document.body.appendChild(a);
-      a.style.display = 'none';
-      a.href = url;
-      a.download = 'captured-video.webm';
-      a.click();
-      window.URL.revokeObjectURL(url);
-    }
+    if (!recordedVideoBlob) return;
+
+    const url = URL.createObjectURL(recordedVideoBlob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `captured-video-${new Date().toISOString()}.webm`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const formatDuration = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
   return (
@@ -152,19 +194,27 @@ export default function VideoCapturePage() {
             muted
             className="h-full w-full object-cover rounded-xl aspect-w-16 aspect-h-9"
             style={{
-              transform: cameraFacing === 'user' ? 'scaleX(-1)' : 'none', // Mirror front camera
+              transform: cameraFacing === 'user' ? 'scaleX(-1)' : 'none',
             }}
           />
         )}
+        {isRecording && (
+          <div className="absolute top-4 right-4 bg-red-500 px-3 py-1 rounded-full flex items-center gap-2">
+            <div className="w-2 h-2 rounded-full bg-white animate-pulse" />
+            <span>{formatDuration(recordingDuration)}</span>
+          </div>
+        )}
       </div>
-      <div className="absolute bottom-0 left-0 right-0 p-4 pb-[calc(1rem+1.25rem)] flex justify-center items-center">
+      <div className="absolute bottom-0 left-0 right-0 p-4 pb-[calc(1rem+1.25rem)] flex justify-center items-center gap-4">
         <Button
-          className="rounded-full p-3 bg-transparent border-2 border-white hover:bg-white/20 transition-colors mr-4"
+          className="rounded-full p-3 bg-transparent border-2 border-white hover:bg-white/20 transition-colors"
           onClick={toggleCamera}
           disabled={isRecording}
+          title="Switch Camera"
         >
           <CameraIcon className="h-6 w-6" />
         </Button>
+
         <Button
           className={`rounded-full p-4 ${
             isRecording
@@ -173,6 +223,7 @@ export default function VideoCapturePage() {
           } transition-colors`}
           onClick={isRecording ? stopRecording : startRecording}
           disabled={!!error}
+          title={isRecording ? 'Stop Recording' : 'Start Recording'}
         >
           <div
             className={`${
@@ -182,14 +233,27 @@ export default function VideoCapturePage() {
             }`}
           />
         </Button>
+
         {recordedVideoBlob && (
-          <Button
-            className="rounded-full p-3 bg-transparent border-2 border-white hover:bg-white/20 transition-colors ml-4"
-            onClick={uploadVideo}
-            disabled={uploading}
-          >
-            {uploading ? 'Uploading...' : 'Upload'}
-          </Button>
+          <>
+            <Button
+              className="rounded-full p-3 bg-transparent border-2 border-white hover:bg-white/20 transition-colors"
+              onClick={uploadVideo}
+              disabled={uploading}
+              title="Upload Video"
+            >
+              <Upload className="h-6 w-6" />
+              {uploading && <span className="ml-2">Uploading...</span>}
+            </Button>
+
+            <Button
+              className="rounded-full p-3 bg-transparent border-2 border-white hover:bg-white/20 transition-colors"
+              onClick={downloadVideo}
+              title="Download Video"
+            >
+              <Download className="h-6 w-6" />
+            </Button>
+          </>
         )}
       </div>
     </div>

@@ -7,6 +7,7 @@ import { GeistSans } from 'geist/font/sans';
 import { ThemeProvider } from 'next-themes';
 import Link from 'next/link';
 import './globals.css';
+import { Toaster } from '@/components/ui/toaster';
 
 const defaultUrl = process.env.VERCEL_URL
   ? `https://${process.env.VERCEL_URL}`
@@ -54,6 +55,7 @@ export default function RootLayout({
               </footer> */}
             </div>
           </main>
+          <Toaster />
         </ThemeProvider>
       </body>
     </html>

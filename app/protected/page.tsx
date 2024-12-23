@@ -2,7 +2,7 @@ import FetchDataSteps from '@/components/tutorial/fetch-data-steps';
 import { createClient } from '@/utils/supabase/server';
 import { InfoIcon } from 'lucide-react';
 import { redirect } from 'next/navigation';
-import fs from 'fs';
+import VideoUpload from '@/components/video-upload';
 
 export default async function ProtectedPage() {
   const supabase = createClient();
@@ -34,6 +34,7 @@ export default async function ProtectedPage() {
         <h2 className="font-bold text-2xl mb-4">Next steps</h2>
         <FetchDataSteps />
       </div>
+      <VideoUpload />
     </div>
   );
 }
