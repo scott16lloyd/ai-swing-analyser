@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server';
 import OpenAI from 'openai';
-import landmarks from "@/app/landmarks.json"
 
 export async function POST() {
   try {
@@ -8,9 +7,6 @@ export async function POST() {
     const openai = new OpenAI({
       apiKey: process.env.OPENAI_API_KEY
     })
-
-    // Prepare the JSON data as a string
-    const landmarksString = JSON.stringify(landmarks, null, 2);
 
     const response = await openai.chat.completions.create({
       model: 'gpt-4o-mini',
