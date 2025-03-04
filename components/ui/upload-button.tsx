@@ -35,7 +35,7 @@ export async function uploadVideoDirectly(
     cameraFacing = 'unknown',
     quality = 'high',
     bucketName = process.env.STORAGE_BUCKET_NAME || '',
-    destinationPath = 'test', // Simplified path
+    destinationPath = 'unprocessed_video/test', // Simplified path
     onProgress = () => {},
   } = options;
 
@@ -74,6 +74,8 @@ export async function uploadVideoDirectly(
         'Content-Type': videoBlob.type,
       },
       body: videoBlob,
+      mode: 'cors',
+      credentials: 'omit',
     });
 
     // Detailed error logging
