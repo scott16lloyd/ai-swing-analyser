@@ -46,13 +46,16 @@ export default function VideoCapturePage() {
       // Stop any existing stream first
       stopCamera();
 
+      const isPortrait = window.innerHeight > window.innerWidth;
+
       // More balanced constraints for better performance
       const constraints = {
         video: {
           facingMode: cameraFacing,
-          width: { ideal: 1280 }, // Reduced from 1920
-          height: { ideal: 720 }, // Reduced from 1080
-          frameRate: { ideal: 30 }, // Explicitly set frame rate
+          width: { ideal: isPortrait ? 720 : 1280 },
+          height: { ideal: isPortrait ? 1280 : 720 },
+          aspectRatio: { ideal: isPortrait ? 9 / 16 : 16 / 9 },
+          frameRate: { ideal: 30 },
         },
         audio: {
           echoCancellation: true,
