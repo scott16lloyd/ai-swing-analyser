@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { useToast } from '@/hooks/use-toast';
 
 interface ProcessVideoOptions {
@@ -25,17 +25,17 @@ interface ProcessVideoResponse {
 }
 
 /**
- * Send a video to the Cloud Run processing service
+ * Simplified function to upload video directly to storage
  */
-export async function processVideoWithCloudRun(
+export async function uploadVideoDirectly(
   videoBlob: Blob,
   options: ProcessVideoOptions = {}
 ): Promise<ProcessVideoResponse> {
   const {
     cameraFacing = 'unknown',
     quality = 'high',
-    bucketName = process.env.NEXT_PUBLIC_POSE_ESTIMATION_ANALYSIS_BUCKET,
-    destinationPath = 'unprocessed_videos/test',
+    bucketName = process.env.STORAGE_BUCKET_NAME || '',
+    destinationPath = 'unprocessed_video/test', // Simplified path
     onProgress = () => {},
   } = options;
 
@@ -43,59 +43,75 @@ export async function processVideoWithCloudRun(
     throw new Error('No video blob provided');
   }
 
-  if (!bucketName) {
-    console.log('bucketName:', bucketName);
-    throw new Error('Storage bucket name is required');
-  }
+  // Skip compression for testing
+  onProgress(20);
 
-  // Create form data
-  const formData = new FormData();
-
-  // Add the video file
+  // Create a unique filename
   const extension = videoBlob.type.includes('mp4') ? 'mp4' : 'webm';
-  const filename = `golf-swing-${Date.now()}.${extension}`;
-  formData.append('video', videoBlob, filename);
+  const timestamp = Date.now();
+  const filename = `test-upload-${timestamp}.${extension}`;
+  const fullPath = `${destinationPath}/${filename}`;
 
-  // Add processing parameters
-  formData.append('quality', quality);
-  formData.append('bucketName', bucketName);
-  formData.append('destinationPath', destinationPath);
+  try {
+    // Import the server action
+    const storageModule = await import('@/app/actions/storage');
+    const generateSignedUrl = storageModule.generateSignedUrl;
 
-  // Add metadata as JSON
-  const metadata = {
-    cameraFacing,
-    deviceInfo: navigator.userAgent,
-    appVersion: process.env.NEXT_PUBLIC_APP_VERSION || '1.0.0',
-    timestamp: new Date().toISOString(),
-  };
-  formData.append('metadata', JSON.stringify(metadata));
+    // Get a simple signed URL
+    const { url, publicUrl } = await generateSignedUrl({
+      filename: fullPath,
+      contentType: videoBlob.type,
+      // No metadata for simplicity
+    });
 
-  // Get the Cloud Run URL from environment
-  const cloudRunUrl = process.env.NEXT_PUBLIC_VIDEO_PROCESSOR_URL;
-  if (!cloudRunUrl) {
-    throw new Error('Video processor URL not configured');
-  }
+    onProgress(40);
+    console.log('Uploading to signed URL:', url);
 
-  // Send the request
-  const response = await fetch(`${cloudRunUrl}/process-upload-video`, {
-    method: 'POST',
-    body: formData,
-  });
+    // Upload with minimal options
+    const uploadResponse = await fetch(url, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': videoBlob.type,
+      },
+      body: videoBlob,
+      mode: 'cors',
+      credentials: 'omit',
+    });
 
-  if (!response.ok) {
-    // Try to parse error response
-    let errorMessage: string;
-    try {
-      const errorData = await response.json();
-      errorMessage = errorData.error || `Server error: ${response.status}`;
-    } catch (e) {
-      errorMessage = `Failed to process video: ${response.status} ${response.statusText}`;
+    // Detailed error logging
+    if (!uploadResponse.ok) {
+      console.error('Upload failed with status:', uploadResponse.status);
+      try {
+        const responseText = await uploadResponse.text();
+        console.error('Response:', responseText);
+      } catch (e) {
+        console.error('Could not read response body');
+      }
+      throw new Error(
+        `Upload failed: ${uploadResponse.status} ${uploadResponse.statusText}`
+      );
     }
-    throw new Error(errorMessage);
-  }
 
-  // Return the processed video information
-  return (await response.json()) as ProcessVideoResponse;
+    onProgress(100);
+    console.log('Upload successful!');
+
+    // Return a success response
+    return {
+      success: true,
+      bucketName: bucketName || 'default-bucket',
+      fileName: fullPath,
+      publicUrl,
+      metadata: {
+        originalName: filename,
+        quality,
+        processingMethod: 'direct_upload',
+        uploadTime: new Date().toISOString(),
+      },
+    };
+  } catch (error) {
+    console.error('Upload error:', error);
+    throw error;
+  }
 }
 
 interface VideoUploadButtonProps {
@@ -105,9 +121,10 @@ interface VideoUploadButtonProps {
   onProcessingError?: (error: Error) => void;
   className?: string;
   disabled?: boolean;
+  useDirectUpload?: boolean;
 }
 
-// Component example
+// Simplified component for testing
 export function VideoUploadButton({
   videoBlob,
   cameraFacing,
@@ -115,9 +132,39 @@ export function VideoUploadButton({
   onProcessingError,
   className = '',
   disabled = false,
+  useDirectUpload = true,
 }: VideoUploadButtonProps) {
   const [uploading, setUploading] = useState<boolean>(false);
+  const [progress, setProgress] = useState<number>(0);
+  const [diagnosticResult, setDiagnosticResult] = useState<any>(null);
   const { toast } = useToast();
+
+  const updateProgress = (value: number) => {
+    setProgress(value);
+  };
+
+  // Add diagnostic test function
+  const runDiagnosticTest = async () => {
+    try {
+      toast({ title: 'Running diagnostic test...' });
+      const storageModule = await import('@/app/actions/storage');
+      const result = await storageModule.testGoogleCloudStorage();
+      setDiagnosticResult(result);
+      toast({
+        title: result.success ? 'Test succeeded' : 'Test failed',
+        description: result.success
+          ? 'Diagnostic upload worked'
+          : `Failed with status: ${result.status}`,
+      });
+    } catch (error) {
+      console.error('Diagnostic test error:', error);
+      toast({
+        title: 'Diagnostic test error',
+        description: error instanceof Error ? error.message : 'Unknown error',
+        variant: 'destructive',
+      });
+    }
+  };
 
   const handleProcessVideo = async () => {
     if (!videoBlob) {
@@ -130,21 +177,23 @@ export function VideoUploadButton({
     }
 
     setUploading(true);
+    setProgress(0);
 
     try {
       toast({
-        title: 'Processing',
-        description: 'Sending video for processing...',
+        title: 'Uploading',
+        description: 'Preparing video for upload...',
       });
 
-      const result = await processVideoWithCloudRun(videoBlob, {
+      const result = await uploadVideoDirectly(videoBlob, {
         cameraFacing,
         quality: 'high',
+        onProgress: updateProgress,
       });
 
       toast({
         title: 'Success',
-        description: 'Video processed and uploaded successfully!',
+        description: 'Video uploaded successfully!',
         variant: 'default',
       });
 
@@ -152,10 +201,10 @@ export function VideoUploadButton({
         onProcessingComplete(result);
       }
     } catch (error) {
-      console.error('Processing failed:', error);
+      console.error('Upload failed:', error);
 
       toast({
-        title: 'Processing Failed',
+        title: 'Upload Failed',
         description:
           error instanceof Error ? error.message : 'Unknown error occurred',
         variant: 'destructive',
@@ -166,16 +215,51 @@ export function VideoUploadButton({
       }
     } finally {
       setUploading(false);
+      setProgress(0);
     }
   };
 
   return (
-    <button
-      className={`px-4 py-2 bg-blue-500 text-white rounded-md disabled:opacity-50 ${className}`}
-      onClick={handleProcessVideo}
-      disabled={uploading || !videoBlob || disabled}
-    >
-      {uploading ? 'Processing...' : 'Process Video'}
-    </button>
+    <div className="relative">
+      <button
+        className={`px-4 py-2 bg-blue-500 text-white rounded-md disabled:opacity-50 ${className}`}
+        onClick={handleProcessVideo}
+        disabled={uploading || !videoBlob || disabled}
+      >
+        {uploading
+          ? `Uploading ${progress ? `${progress}%` : '...'}`
+          : 'Upload Video'}
+      </button>
+
+      {uploading && progress > 0 && (
+        <div className="w-full h-1 bg-gray-200 rounded-full mt-2 overflow-hidden">
+          <div
+            className="h-full bg-blue-500 transition-all duration-300 ease-in-out"
+            style={{ width: `${progress}%` }}
+          ></div>
+        </div>
+      )}
+
+      {/* Add diagnostic test button */}
+      <button
+        className="mt-2 px-4 py-2 bg-gray-500 text-white rounded-md"
+        onClick={runDiagnosticTest}
+        disabled={uploading}
+      >
+        Run Diagnostic Test
+      </button>
+
+      {/* Display diagnostic results if available */}
+      {diagnosticResult && (
+        <div className="mt-2 p-2 bg-gray-100 rounded text-sm">
+          <p>
+            Diagnostic result:{' '}
+            {diagnosticResult.success ? '✅ Success' : '❌ Failed'}
+          </p>
+          {diagnosticResult.status && <p>Status: {diagnosticResult.status}</p>}
+          {diagnosticResult.error && <p>Error: {diagnosticResult.error}</p>}
+        </div>
+      )}
+    </div>
   );
 }
