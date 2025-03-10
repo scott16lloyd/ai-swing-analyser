@@ -482,11 +482,12 @@ export default function VideoCapturePage() {
         // Clean up audio analysis
         stopImpactDetection();
 
-        // If we have an impact time, trim the video around that time
-        if (impactTimeLabel) {
-          setIsProcessing(true);
+        // Set isProcessing to true first, before any video processing
+        setIsProcessing(true);
 
-          try {
+        try {
+          // If we have an impact time, trim the video around that time
+          if (impactTimeLabel) {
             // Convert impact time label back to seconds
             const impactTimeParts = impactTimeLabel.split(':');
             const minutes = parseInt(impactTimeParts[0]);
@@ -507,26 +508,30 @@ export default function VideoCapturePage() {
             );
             setTrimmedVideoBlob(trimmedBlob);
 
+            setRecordedVideoBlob(blob);
+
             toast({
               title: 'Video Processed',
               description: `Auto-trimmed around impact at ${impactTimeLabel}`,
               variant: 'default',
             });
-          } catch (error) {
-            console.error('Error trimming video:', error);
-            toast({
-              title: 'Trimming Failed',
-              description: 'Using the full video instead',
-              variant: 'default',
-            });
-          } finally {
-            setIsProcessing(false);
+          } else {
+            // No impact detected, just use the full video
+            console.log('No impact detected, using full video');
+            setRecordedVideoBlob(blob);
           }
-        }
+        } catch (error) {
+          console.error('Error trimming video:', error);
+          toast({
+            title: 'Trimming Failed',
+            description: 'Using the full video instead',
+            variant: 'default',
+          });
 
-        // Set the recorded video blob regardless of trimming success
-        setRecordedVideoBlob(blob);
-        setIsProcessing(false);
+          setRecordedVideoBlob(blob);
+        } finally {
+          setIsProcessing(false);
+        }
       };
 
       // Request data more frequently for smoother recording
@@ -909,7 +914,11 @@ export default function VideoCapturePage() {
           // Show recorded video playback
           <div className="relative h-full w-full">
             <video
-              key={trimmedVideoBlob ? 'trimmed' : 'recorded'}
+              key={
+                trimmedVideoBlob
+                  ? `trimmed-${Date.now()}`
+                  : `recorded-${Date.now()}`
+              }
               src={URL.createObjectURL(trimmedVideoBlob || recordedVideoBlob)}
               className="h-full w-full object-contain"
               controls
