@@ -472,9 +472,6 @@ export default function VideoCapturePage() {
       };
 
       mediaRecorder.onstop = async () => {
-        // Create a new blob with the correct MIME type
-        const blob = new Blob(chunksRef.current, { type: mimeType });
-
         if (recordingTimerRef.current) {
           clearInterval(recordingTimerRef.current);
         }
@@ -484,6 +481,9 @@ export default function VideoCapturePage() {
 
         // Set isProcessing to true first, before any video processing
         setIsProcessing(true);
+
+        // Create a new blob with the correct MIME type
+        const fullVideoBlob = new Blob(chunksRef.current, { type: mimeType });
 
         try {
           // If we have an impact time, trim the video around that time
@@ -500,37 +500,63 @@ export default function VideoCapturePage() {
 
             console.log(`Trimming video from ${startTime}s to ${endTime}s`);
 
-            // Trim the video
-            const trimmedBlob = await trimVideoByTimeRange(
-              blob,
-              startTime,
-              endTime
-            );
-            setTrimmedVideoBlob(trimmedBlob);
+            try {
+              // Trim the video
+              const trimmedBlob = await trimVideoByTimeRange(
+                fullVideoBlob,
+                startTime,
+                endTime
+              );
 
-            setRecordedVideoBlob(blob);
+              console.log(
+                'Trimmed video created successfully:',
+                trimmedBlob.size,
+                'bytes'
+              );
 
-            toast({
-              title: 'Video Processed',
-              description: `Auto-trimmed around impact at ${impactTimeLabel}`,
-              variant: 'default',
-            });
+              setRecordedVideoBlob(fullVideoBlob);
+
+              // Use a small timeout to ensure state updates separately
+              setTimeout(() => {
+                setTrimmedVideoBlob(trimmedBlob);
+                setIsProcessing(false);
+
+                toast({
+                  title: 'Video Processed',
+                  description: `Auto-trimmed around impact at ${impactTimeLabel}`,
+                  variant: 'default',
+                });
+              }, 100);
+            } catch (error) {
+              console.error('Error trimming video:', error);
+              // If trimming fails, just use the full video
+              setRecordedVideoBlob(fullVideoBlob);
+              setIsProcessing(false);
+
+              toast({
+                title: 'Trimming Failed',
+                description: 'Using the full video instead',
+                variant: 'destructive',
+              });
+            }
           } else {
             // No impact detected, just use the full video
             console.log('No impact detected, using full video');
-            setRecordedVideoBlob(blob);
+            setRecordedVideoBlob(fullVideoBlob);
+            setIsProcessing(false);
           }
         } catch (error) {
           console.error('Error trimming video:', error);
-          toast({
-            title: 'Trimming Failed',
-            description: 'Using the full video instead',
-            variant: 'default',
-          });
 
-          setRecordedVideoBlob(blob);
-        } finally {
+          // Fallback to showing the full video
+          setRecordedVideoBlob(fullVideoBlob);
           setIsProcessing(false);
+
+          toast({
+            title: 'Processing Error',
+            description: 'There was an error processing the video',
+            variant: 'destructive',
+          });
         }
       };
 
@@ -789,6 +815,22 @@ export default function VideoCapturePage() {
     }
   };
 
+  const getVideoUrl = () => {
+    // If we have a trimmed video, use that
+    if (trimmedVideoBlob) {
+      console.log('Using trimmed video for playback');
+      return URL.createObjectURL(trimmedVideoBlob);
+    }
+
+    // Otherwise use the full video
+    if (recordedVideoBlob) {
+      console.log('Using full video for playback');
+      return URL.createObjectURL(recordedVideoBlob);
+    }
+
+    return '';
+  };
+
   // Add function to stop impact detection
   const stopImpactDetection = () => {
     setIsListeningForImpact(false);
@@ -914,12 +956,8 @@ export default function VideoCapturePage() {
           // Show recorded video playback
           <div className="relative h-full w-full">
             <video
-              key={
-                trimmedVideoBlob
-                  ? `trimmed-${Date.now()}`
-                  : `recorded-${Date.now()}`
-              }
-              src={URL.createObjectURL(trimmedVideoBlob || recordedVideoBlob)}
+              key={`video-${trimmedVideoBlob ? 'trimmed' : 'full'}-${Date.now()}`}
+              src={getVideoUrl()}
               className="h-full w-full object-contain"
               controls
               autoPlay
