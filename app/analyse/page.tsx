@@ -1151,6 +1151,7 @@ export default function VideoCapturePage() {
             <VideoPlayer
               videoBlob={trimmedVideoBlob || recordedVideoBlob}
               impactTimeLabel={impactTimeLabel}
+              cameraFacing={cameraFacing}
             />
 
             {trimmedVideoBlob && (

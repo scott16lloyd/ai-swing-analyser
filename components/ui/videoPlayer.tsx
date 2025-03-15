@@ -5,17 +5,33 @@ import { useEffect, useState, useRef } from 'react';
 type VideoPlayerProps = {
   videoBlob: Blob | null;
   impactTimeLabel?: string | null;
-  forcePortrait?: boolean; // Add this prop to force portrait mode
+  cameraFacing?: 'user' | 'environment';
 };
 
 export default function VideoPlayer({
   videoBlob,
   impactTimeLabel,
-  forcePortrait = true, // Default to forcing portrait for mobile recordings
+  cameraFacing = 'environment', // Default to back camera
 }: VideoPlayerProps) {
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
+  const [videoInfo, setVideoInfo] = useState({
+    width: 0,
+    height: 0,
+    isPortrait: false,
+    needsRotation: false,
+  });
+
+  // Check if device is iOS (iPhone/iPad)
+  const [isIOS] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return (
+        /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+        (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+      );
+    }
+    return false;
+  });
 
   // Create the blob URL when the component mounts or when videoBlob changes
   useEffect(() => {
@@ -28,7 +44,7 @@ export default function VideoPlayer({
     if (videoBlob) {
       const url = URL.createObjectURL(videoBlob);
       setBlobUrl(url);
-      console.log('Created blob URL:', url);
+      console.log('Created blob URL:', url, 'Blob size:', videoBlob.size);
     } else {
       setBlobUrl(null);
     }
@@ -43,6 +59,71 @@ export default function VideoPlayer({
     };
   }, [videoBlob]);
 
+  // Handle video metadata loaded event
+  const handleMetadataLoaded = () => {
+    if (!videoRef.current) return;
+
+    const video = videoRef.current;
+    const videoWidth = video.videoWidth;
+    const videoHeight = video.videoHeight;
+
+    console.log(`Video natural dimensions: ${videoWidth}x${videoHeight}`);
+
+    // Determine if the video is portrait oriented
+    const isPortraitVideo = videoHeight > videoWidth;
+
+    // On iOS, videos recorded in portrait mode on the back camera
+    // often need to be rotated 90 degrees for proper display
+    const needsRotation =
+      isIOS && isPortraitVideo && cameraFacing === 'environment';
+
+    console.log(
+      `Video orientation: ${isPortraitVideo ? 'portrait' : 'landscape'}, Needs rotation: ${needsRotation}`
+    );
+
+    setVideoInfo({
+      width: videoWidth,
+      height: videoHeight,
+      isPortrait: isPortraitVideo,
+      needsRotation,
+    });
+  };
+
+  const getVideoStyles = (): React.CSSProperties => {
+    const { isPortrait, needsRotation } = videoInfo;
+
+    // Base styles
+    const baseStyles: React.CSSProperties = {
+      maxHeight: '100%',
+      maxWidth: '100%',
+      objectFit: 'contain',
+    };
+
+    // If detected as portrait and we're on iOS with back camera, apply rotation
+    if (needsRotation) {
+      return {
+        ...baseStyles,
+        transform: 'rotate(90deg)',
+        maxWidth: 'none',
+        width: '100vh', // Use viewport height for width
+        height: 'auto',
+      };
+    }
+
+    // For portrait videos without rotation needed
+    if (isPortrait) {
+      return {
+        ...baseStyles,
+        maxHeight: '100%',
+        maxWidth: '80%',
+        width: 'auto',
+      };
+    }
+
+    // For landscape videos
+    return baseStyles;
+  };
+
   if (!blobUrl) {
     return (
       <div className="flex items-center justify-center h-full">
@@ -52,40 +133,15 @@ export default function VideoPlayer({
   }
 
   return (
-    <div
-      ref={containerRef}
-      className="relative h-full w-full flex items-center justify-center bg-black overflow-hidden"
-    >
-      <div
-        className={`video-container ${forcePortrait ? 'force-portrait' : ''}`}
-        style={{
-          width: '100%',
-          height: '100%',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-        }}
-      >
-        <video
-          ref={videoRef}
-          src={blobUrl}
-          className="video-element"
-          style={{
-            maxHeight: forcePortrait ? '100%' : '100%',
-            maxWidth: forcePortrait ? '80%' : '100%',
-            objectFit: 'contain',
-            // This transform is the key to forcing portrait orientation
-            ...(forcePortrait && {
-              transform: 'rotate(90deg)',
-              width: '100vh', // Use viewport height for width
-              maxWidth: 'unset',
-              height: 'auto',
-            }),
-          }}
-          controls
-          playsInline
-        />
-      </div>
+    <div className="relative h-full w-full flex items-center justify-center bg-black overflow-hidden">
+      <video
+        ref={videoRef}
+        src={blobUrl}
+        style={getVideoStyles()}
+        controls
+        playsInline
+        onLoadedMetadata={handleMetadataLoaded}
+      />
 
       {/* Optional impact time display */}
       {impactTimeLabel && (
