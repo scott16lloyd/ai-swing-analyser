@@ -15,6 +15,7 @@ export default function VideoPlayer({
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const videoContainerRef = useRef<HTMLDivElement>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -58,13 +59,15 @@ export default function VideoPlayer({
       !blobUrl ||
       !videoRef.current ||
       !canvasRef.current ||
-      !containerRef.current
+      !containerRef.current ||
+      !videoContainerRef.current
     )
       return;
 
     const video = videoRef.current;
     const canvas = canvasRef.current;
     const container = containerRef.current;
+    const videoContainer = videoContainerRef.current;
     const ctx = canvas.getContext('2d');
 
     if (!ctx) return;
@@ -73,25 +76,48 @@ export default function VideoPlayer({
     const resizeCanvas = () => {
       if (!video.videoWidth || !video.videoHeight) return;
 
-      // Get container dimensions
-      const containerWidth = container.clientWidth;
-      const containerHeight = container.clientHeight;
+      // Get video container dimensions
+      const containerWidth = videoContainer.clientWidth;
+      const containerHeight = videoContainer.clientHeight;
 
-      // Calculate video dimensions (width and height are swapped because of rotation)
-      const videoRatio = video.videoHeight / video.videoWidth; // Height/width because we're rotating
+      console.log(`Video container size: ${containerWidth}x${containerHeight}`);
 
-      // Target height is 70% of available height (increased from 50%)
-      const targetHeight = containerHeight * 0.7;
+      // Calculate video dimensions (switching width and height due to rotation)
+      const originalWidth = video.videoWidth;
+      const originalHeight = video.videoHeight;
+      const isPortrait = originalHeight > originalWidth;
 
-      // Calculate width based on video ratio, ensuring it fits within container
-      let canvasWidth = Math.min(containerWidth, targetHeight / videoRatio);
-      let canvasHeight = canvasWidth * videoRatio;
+      console.log(
+        `Original video dimensions: ${originalWidth}x${originalHeight}, isPortrait: ${isPortrait}`
+      );
 
-      // If calculated height is still too tall, adjust
-      if (canvasHeight > targetHeight) {
-        canvasHeight = targetHeight;
-        canvasWidth = canvasHeight / videoRatio;
+      // If we're rotating a landscape video to portrait or vice versa,
+      // we need to swap dimensions for calculations
+      const videoWidth = isPortrait ? originalHeight : originalWidth;
+      const videoHeight = isPortrait ? originalWidth : originalHeight;
+
+      // The video ratio after rotation
+      const videoRatio = videoWidth / videoHeight;
+
+      // Calculate canvas dimensions to fill container
+      let canvasWidth, canvasHeight;
+
+      // Target is to maximize height usage within the container
+      const containerRatio = containerWidth / containerHeight;
+
+      if (videoRatio > containerRatio) {
+        // Video is wider than container (relatively), so fit to width
+        canvasWidth = containerWidth;
+        canvasHeight = containerWidth / videoRatio;
+      } else {
+        // Video is taller than container (relatively), so fit to height
+        canvasHeight = containerHeight;
+        canvasWidth = containerHeight * videoRatio;
       }
+
+      // Ensure we don't exceed container dimensions
+      canvasWidth = Math.min(canvasWidth, containerWidth);
+      canvasHeight = Math.min(canvasHeight, containerHeight);
 
       // Set canvas dimensions
       canvas.width = canvasWidth;
@@ -99,9 +125,7 @@ export default function VideoPlayer({
 
       setVideoDimensions({ width: canvasWidth, height: canvasHeight });
 
-      console.log(
-        `Canvas resized to ${canvasWidth}x${canvasHeight}, container: ${containerWidth}x${containerHeight}`
-      );
+      console.log(`Canvas sized to ${canvasWidth}x${canvasHeight}`);
     };
 
     // Function to draw the rotated video on canvas
@@ -120,19 +144,26 @@ export default function VideoPlayer({
       // Rotate 90 degrees
       ctx.rotate(Math.PI / 2);
 
-      // Calculate scale to fit properly
-      const scale = Math.min(
-        canvas.height / video.videoWidth,
-        canvas.width / video.videoHeight
-      );
+      // Calculate dimensions to maintain aspect ratio while filling canvas
+      const videoWidth = video.videoWidth;
+      const videoHeight = video.videoHeight;
+
+      // Calculate scale to maximize fill without distorting
+      // Since we're rotating, we need to swap canvas dimensions for comparison
+      const scaleX = canvas.height / videoWidth;
+      const scaleY = canvas.width / videoHeight;
+      const scale = Math.max(scaleX, scaleY); // Use max to ensure video fills the canvas
+
+      const scaledWidth = videoWidth * scale;
+      const scaledHeight = videoHeight * scale;
 
       // Draw video rotated and scaled
       ctx.drawImage(
         video,
-        (-video.videoWidth * scale) / 2,
-        (-video.videoHeight * scale) / 2,
-        video.videoWidth * scale,
-        video.videoHeight * scale
+        -scaledWidth / 2,
+        -scaledHeight / 2,
+        scaledWidth,
+        scaledHeight
       );
 
       // Restore context
@@ -145,10 +176,12 @@ export default function VideoPlayer({
     // Event handlers for video
     const handleLoadedMetadata = () => {
       setDuration(video.duration);
-      resizeCanvas();
       console.log(
         `Video loaded. Dimensions: ${video.videoWidth}x${video.videoHeight}, Duration: ${video.duration}s`
       );
+
+      // Wait a bit for layout to stabilize before resizing
+      setTimeout(resizeCanvas, 50);
     };
 
     const handleTimeUpdate = () => {
@@ -236,19 +269,26 @@ export default function VideoPlayer({
                 // Rotate 90 degrees
                 ctx.rotate(Math.PI / 2);
 
-                // Calculate scale to fit properly
-                const scale = Math.min(
-                  canvasRef.current!.height / videoRef.current.videoWidth,
-                  canvasRef.current!.width / videoRef.current.videoHeight
-                );
+                // Calculate dimensions to maintain aspect ratio while filling canvas
+                const videoWidth = videoRef.current.videoWidth;
+                const videoHeight = videoRef.current.videoHeight;
+
+                // Calculate scale to maximize fill without distorting
+                // Since we're rotating, we need to swap canvas dimensions for comparison
+                const scaleX = canvasRef.current!.height / videoWidth;
+                const scaleY = canvasRef.current!.width / videoHeight;
+                const scale = Math.max(scaleX, scaleY); // Use max to ensure video fills the canvas
+
+                const scaledWidth = videoWidth * scale;
+                const scaledHeight = videoHeight * scale;
 
                 // Draw video rotated and scaled
                 ctx.drawImage(
                   videoRef.current,
-                  (-videoRef.current.videoWidth * scale) / 2,
-                  (-videoRef.current.videoHeight * scale) / 2,
-                  videoRef.current.videoWidth * scale,
-                  videoRef.current.videoHeight * scale
+                  -scaledWidth / 2,
+                  -scaledHeight / 2,
+                  scaledWidth,
+                  scaledHeight
                 );
 
                 // Restore context
@@ -323,10 +363,11 @@ export default function VideoPlayer({
         preload="metadata"
       />
 
-      {/* Canvas container - set to approximately 70% height for larger display */}
+      {/* Canvas container - taking up full available space */}
       <div
-        className="flex-grow flex items-center justify-center w-full"
-        style={{ maxHeight: '70%' }}
+        ref={videoContainerRef}
+        className="flex-grow flex items-center justify-center w-full h-full"
+        style={{ height: 'calc(100% - 120px)' }} // Adjust based on your controls height
       >
         {/* Canvas to display rotated video */}
         <canvas
@@ -336,6 +377,9 @@ export default function VideoPlayer({
           style={{
             maxWidth: '100%',
             maxHeight: '100%',
+            width: 'auto',
+            height: 'auto',
+            objectFit: 'contain',
           }}
         />
 
@@ -352,7 +396,7 @@ export default function VideoPlayer({
             <div className="bg-black/30 rounded-full p-3">
               <svg
                 xmlns="http://www.w3.org/2000/svg"
-                className="h-10 w-10 text-white"
+                className="h-12 w-12 text-white"
                 fill="none"
                 viewBox="0 0 24 24"
                 stroke="currentColor"
@@ -376,9 +420,12 @@ export default function VideoPlayer({
       </div>
 
       {/* Custom controls that remain in normal orientation */}
-      <div className="w-full px-4 py-3 bg-black/70 mt-2">
+      <div
+        className="w-full px-4 py-3 bg-black/70 mt-auto"
+        style={{ height: '120px' }}
+      >
         {/* Progress bar */}
-        <div className="flex items-center space-x-2 mb-2">
+        <div className="flex items-center space-x-2 mb-3">
           <span className="text-white text-sm">{formatTime(currentTime)}</span>
           <input
             type="range"
@@ -403,7 +450,7 @@ export default function VideoPlayer({
               {isPlaying ? (
                 <svg
                   xmlns="http://www.w3.org/2000/svg"
-                  className="h-7 w-7"
+                  className="h-8 w-8"
                   fill="none"
                   viewBox="0 0 24 24"
                   stroke="currentColor"
@@ -418,7 +465,7 @@ export default function VideoPlayer({
               ) : (
                 <svg
                   xmlns="http://www.w3.org/2000/svg"
-                  className="h-7 w-7"
+                  className="h-8 w-8"
                   fill="none"
                   viewBox="0 0 24 24"
                   stroke="currentColor"
@@ -440,7 +487,7 @@ export default function VideoPlayer({
             </button>
 
             {/* Volume controls */}
-            <div className="flex items-center space-x-2">
+            <div className="flex items-center space-x-3">
               <button
                 onClick={toggleMute}
                 className="text-white focus:outline-none"
@@ -449,7 +496,7 @@ export default function VideoPlayer({
                 {isMuted ? (
                   <svg
                     xmlns="http://www.w3.org/2000/svg"
-                    className="h-7 w-7"
+                    className="h-8 w-8"
                     fill="none"
                     viewBox="0 0 24 24"
                     stroke="currentColor"
@@ -471,7 +518,7 @@ export default function VideoPlayer({
                 ) : (
                   <svg
                     xmlns="http://www.w3.org/2000/svg"
-                    className="h-7 w-7"
+                    className="h-8 w-8"
                     fill="none"
                     viewBox="0 0 24 24"
                     stroke="currentColor"
@@ -492,7 +539,7 @@ export default function VideoPlayer({
                 step="0.05"
                 value={volume}
                 onChange={handleVolumeChange}
-                className="w-20 h-2 bg-gray-600 rounded-lg appearance-none cursor-pointer"
+                className="w-24 h-2 bg-gray-600 rounded-lg appearance-none cursor-pointer"
                 aria-label="Volume"
               />
             </div>
