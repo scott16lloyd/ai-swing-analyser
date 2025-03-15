@@ -393,24 +393,28 @@ export default function VideoPlayer({
       </div>
 
       {/* Custom controls that remain in normal orientation */}
-      <div className="w-full bg-black/90 border-t border-gray-800 px-3 py-2 h-70">
+      <div className="w-full bg-black/90 border-t border-gray-800 px-3 py-2 h-70 overflow-hidden">
         {/* Progress bar */}
-        <div className="flex items-center space-x-2 mb-2">
-          <span className="text-white text-xs">{formatTime(currentTime)}</span>
+        <div className="flex items-center space-x-2 mb-2 max-w-full">
+          <span className="text-white text-xs whitespace-nowrap">
+            {formatTime(currentTime)}
+          </span>
           <input
             type="range"
             min="0"
             max={duration}
             value={currentTime}
             onChange={handleSeek}
-            className="flex-grow h-1.5 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
+            className="flex-grow h-1.5 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-blue-500 min-w-0"
           />
-          <span className="text-white text-xs">{formatTime(duration)}</span>
+          <span className="text-white text-xs whitespace-nowrap">
+            {formatTime(duration)}
+          </span>
         </div>
 
         {/* Control buttons */}
-        <div className="flex items-center justify-between">
-          <div className="flex items-center space-x-4">
+        <div className="flex items-center justify-between max-w-full">
+          <div className="flex items-center space-x-2 sm:space-x-4">
             {/* Play/Pause button */}
             <button
               onClick={togglePlay}
@@ -457,7 +461,7 @@ export default function VideoPlayer({
             </button>
 
             {/* Volume controls */}
-            <div className="flex items-center space-x-2">
+            <div className="flex items-center space-x-1 sm:space-x-2">
               <button
                 onClick={toggleMute}
                 className="text-white hover:text-blue-400 focus:outline-none"
@@ -509,7 +513,7 @@ export default function VideoPlayer({
                 step="0.05"
                 value={volume}
                 onChange={handleVolumeChange}
-                className="w-20 h-1.5 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
+                className="w-10 sm:w-20 h-1.5 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-blue-500 min-w-0"
                 aria-label="Volume"
               />
             </div>
