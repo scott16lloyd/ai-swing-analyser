@@ -346,7 +346,7 @@ export default function VideoPlayer({
   return (
     <div
       ref={containerRef}
-      className="relative h-full w-full flex flex-col items-center justify-center bg-black"
+      className="relative h-full w-full flex flex-col bg-black overflow-hidden"
     >
       {/* Hidden video element for processing */}
       <video
@@ -360,16 +360,13 @@ export default function VideoPlayer({
       {/* Video container - takes most of the available space */}
       <div
         ref={videoContainerRef}
-        className="flex-grow flex items-center justify-center w-full"
-        style={{
-          height: 'calc(100% - 100px)', // Leave space for controls
-          padding: '10px', // Add some padding
-        }}
+        className="flex-grow flex items-center justify-center w-full overflow-hidden"
+        style={{ height: 'calc(100% - 70px)' }} // Reduced control height
       >
         {/* Canvas to display rotated video */}
         <canvas
           ref={canvasRef}
-          className="bg-black cursor-pointer"
+          className="bg-black cursor-pointer max-w-full max-h-full"
           onClick={togglePlay}
         />
 
@@ -386,7 +383,7 @@ export default function VideoPlayer({
             <div className="bg-black/30 rounded-full p-3">
               <svg
                 xmlns="http://www.w3.org/2000/svg"
-                className="h-12 w-12 text-white"
+                className="h-10 w-10 text-white"
                 fill="none"
                 viewBox="0 0 24 24"
                 stroke="currentColor"
@@ -410,19 +407,19 @@ export default function VideoPlayer({
       </div>
 
       {/* Custom controls that remain in normal orientation */}
-      <div className="w-full px-4 py-3 bg-black/70" style={{ height: '100px' }}>
+      <div className="w-full bg-black/90 border-t border-gray-800 px-3 py-2 h-70">
         {/* Progress bar */}
-        <div className="flex items-center space-x-2 mb-3">
-          <span className="text-white text-sm">{formatTime(currentTime)}</span>
+        <div className="flex items-center space-x-2 mb-2">
+          <span className="text-white text-xs">{formatTime(currentTime)}</span>
           <input
             type="range"
             min="0"
             max={duration}
             value={currentTime}
             onChange={handleSeek}
-            className="flex-grow h-2 bg-gray-600 rounded-lg appearance-none cursor-pointer"
+            className="flex-grow h-1.5 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
           />
-          <span className="text-white text-sm">{formatTime(duration)}</span>
+          <span className="text-white text-xs">{formatTime(duration)}</span>
         </div>
 
         {/* Control buttons */}
@@ -431,13 +428,13 @@ export default function VideoPlayer({
             {/* Play/Pause button */}
             <button
               onClick={togglePlay}
-              className="text-white focus:outline-none"
+              className="text-white hover:text-blue-400 focus:outline-none"
               aria-label={isPlaying ? 'Pause' : 'Play'}
             >
               {isPlaying ? (
                 <svg
                   xmlns="http://www.w3.org/2000/svg"
-                  className="h-8 w-8"
+                  className="h-7 w-7"
                   fill="none"
                   viewBox="0 0 24 24"
                   stroke="currentColor"
@@ -452,7 +449,7 @@ export default function VideoPlayer({
               ) : (
                 <svg
                   xmlns="http://www.w3.org/2000/svg"
-                  className="h-8 w-8"
+                  className="h-7 w-7"
                   fill="none"
                   viewBox="0 0 24 24"
                   stroke="currentColor"
@@ -474,16 +471,16 @@ export default function VideoPlayer({
             </button>
 
             {/* Volume controls */}
-            <div className="flex items-center space-x-3">
+            <div className="flex items-center space-x-2">
               <button
                 onClick={toggleMute}
-                className="text-white focus:outline-none"
+                className="text-white hover:text-blue-400 focus:outline-none"
                 aria-label={isMuted ? 'Unmute' : 'Mute'}
               >
                 {isMuted ? (
                   <svg
                     xmlns="http://www.w3.org/2000/svg"
-                    className="h-8 w-8"
+                    className="h-6 w-6"
                     fill="none"
                     viewBox="0 0 24 24"
                     stroke="currentColor"
@@ -505,7 +502,7 @@ export default function VideoPlayer({
                 ) : (
                   <svg
                     xmlns="http://www.w3.org/2000/svg"
-                    className="h-8 w-8"
+                    className="h-6 w-6"
                     fill="none"
                     viewBox="0 0 24 24"
                     stroke="currentColor"
@@ -526,7 +523,7 @@ export default function VideoPlayer({
                 step="0.05"
                 value={volume}
                 onChange={handleVolumeChange}
-                className="w-24 h-2 bg-gray-600 rounded-lg appearance-none cursor-pointer"
+                className="w-20 h-1.5 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
                 aria-label="Volume"
               />
             </div>
@@ -536,7 +533,7 @@ export default function VideoPlayer({
 
       {/* Impact time label */}
       {impactTimeLabel && (
-        <div className="absolute top-4 left-4 bg-blue-600 text-white px-3 py-1 rounded-full text-sm z-10">
+        <div className="absolute top-2 left-2 bg-blue-600 text-white px-2 py-0.5 rounded-full text-xs z-10">
           Impact at {impactTimeLabel}
         </div>
       )}
