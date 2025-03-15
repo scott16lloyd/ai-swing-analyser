@@ -5,33 +5,14 @@ import { useEffect, useState, useRef } from 'react';
 type VideoPlayerProps = {
   videoBlob: Blob | null;
   impactTimeLabel?: string | null;
-  cameraFacing?: 'user' | 'environment';
 };
 
 export default function VideoPlayer({
   videoBlob,
   impactTimeLabel,
-  cameraFacing = 'environment', // Default to back camera
 }: VideoPlayerProps) {
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const [videoInfo, setVideoInfo] = useState({
-    width: 0,
-    height: 0,
-    isPortrait: false,
-    needsRotation: false,
-  });
-
-  // Check if device is iOS (iPhone/iPad)
-  const [isIOS] = useState(() => {
-    if (typeof window !== 'undefined') {
-      return (
-        /iPad|iPhone|iPod/.test(navigator.userAgent) ||
-        (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
-      );
-    }
-    return false;
-  });
+  const videoContainerRef = useRef<HTMLDivElement>(null);
 
   // Create the blob URL when the component mounts or when videoBlob changes
   useEffect(() => {
@@ -44,7 +25,7 @@ export default function VideoPlayer({
     if (videoBlob) {
       const url = URL.createObjectURL(videoBlob);
       setBlobUrl(url);
-      console.log('Created blob URL:', url, 'Blob size:', videoBlob.size);
+      console.log('Created blob URL:', url);
     } else {
       setBlobUrl(null);
     }
@@ -59,71 +40,6 @@ export default function VideoPlayer({
     };
   }, [videoBlob]);
 
-  // Handle video metadata loaded event
-  const handleMetadataLoaded = () => {
-    if (!videoRef.current) return;
-
-    const video = videoRef.current;
-    const videoWidth = video.videoWidth;
-    const videoHeight = video.videoHeight;
-
-    console.log(`Video natural dimensions: ${videoWidth}x${videoHeight}`);
-
-    // Determine if the video is portrait oriented
-    const isPortraitVideo = videoHeight > videoWidth;
-
-    // On iOS, videos recorded in portrait mode on the back camera
-    // often need to be rotated 90 degrees for proper display
-    const needsRotation =
-      isIOS && isPortraitVideo && cameraFacing === 'environment';
-
-    console.log(
-      `Video orientation: ${isPortraitVideo ? 'portrait' : 'landscape'}, Needs rotation: ${needsRotation}`
-    );
-
-    setVideoInfo({
-      width: videoWidth,
-      height: videoHeight,
-      isPortrait: isPortraitVideo,
-      needsRotation,
-    });
-  };
-
-  const getVideoStyles = (): React.CSSProperties => {
-    const { isPortrait, needsRotation } = videoInfo;
-
-    // Base styles
-    const baseStyles: React.CSSProperties = {
-      maxHeight: '100%',
-      maxWidth: '100%',
-      objectFit: 'contain',
-    };
-
-    // If detected as portrait and we're on iOS with back camera, apply rotation
-    if (needsRotation) {
-      return {
-        ...baseStyles,
-        transform: 'rotate(90deg)',
-        maxWidth: 'none',
-        width: '100vh', // Use viewport height for width
-        height: 'auto',
-      };
-    }
-
-    // For portrait videos without rotation needed
-    if (isPortrait) {
-      return {
-        ...baseStyles,
-        maxHeight: '100%',
-        maxWidth: '80%',
-        width: 'auto',
-      };
-    }
-
-    // For landscape videos
-    return baseStyles;
-  };
-
   if (!blobUrl) {
     return (
       <div className="flex items-center justify-center h-full">
@@ -133,17 +49,59 @@ export default function VideoPlayer({
   }
 
   return (
-    <div className="relative h-full w-full flex items-center justify-center bg-black overflow-hidden">
-      <video
-        ref={videoRef}
-        src={blobUrl}
-        style={getVideoStyles()}
-        controls
-        playsInline
-        onLoadedMetadata={handleMetadataLoaded}
-      />
+    <div className="relative h-full w-full flex items-center justify-center bg-black">
+      {/* Video container with rotation style */}
+      <div
+        ref={videoContainerRef}
+        className="relative max-h-full max-w-full"
+        style={{
+          width: '80%',
+          height: '100%',
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center',
+          overflow: 'hidden',
+        }}
+      >
+        {/* This CSS wrapper handles rotation while keeping controls normal */}
+        <div className="video-rotation-wrapper">
+          <video src={blobUrl} controls playsInline className="rotated-video" />
+        </div>
 
-      {/* Optional impact time display */}
+        {/* Embed the required CSS directly */}
+        <style jsx>{`
+          .video-rotation-wrapper {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            overflow: hidden;
+          }
+
+          /* The trick: Apply rotation only to the video content, not to the controls */
+          .video-rotation-wrapper video {
+            transform: rotate(90deg);
+            object-fit: contain;
+            max-height: none;
+            max-width: none;
+            width: 100vh; /* Use viewport height as width */
+            height: auto;
+            background: black;
+          }
+
+          /* Hide native controls and only show when hovering */
+          .video-rotation-wrapper video::-webkit-media-controls {
+            transform: rotate(0deg); /* Keep controls normal */
+            transform-origin: bottom center;
+            position: absolute;
+            bottom: 0;
+            width: 100%;
+          }
+        `}</style>
+      </div>
+
+      {/* Impact time label */}
       {impactTimeLabel && (
         <div className="absolute top-4 left-4 bg-blue-600 text-white px-3 py-1 rounded-full text-sm z-10">
           Impact at {impactTimeLabel}
