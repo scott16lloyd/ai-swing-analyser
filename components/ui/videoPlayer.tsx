@@ -349,7 +349,7 @@ export default function VideoPlayer({
         style={{ height: 'calc(100% - 70px)' }} // Reduced control height
       >
         {/* Canvas to display rotated video */}
-        <div className="h-full relative">
+        <div className="h-full flex justify-center items-center overflow-hidden">
           <canvas
             ref={canvasRef}
             className="bg-black cursor-pointer h-full"
