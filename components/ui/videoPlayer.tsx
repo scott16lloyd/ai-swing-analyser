@@ -91,28 +91,16 @@ export default function VideoPlayer({
         `Original video dimensions: ${originalWidth}x${originalHeight}, isPortrait: ${isPortrait}`
       );
 
-      // After rotation, these will be our effective dimensions
+      // Take full container height regardless of aspect ratio
+      const canvasHeight = containerHeight;
+
+      // Calculate width based on video aspect ratio after rotation
       const effectiveWidth = isPortrait ? originalHeight : originalWidth;
       const effectiveHeight = isPortrait ? originalWidth : originalHeight;
-
-      // Calculate aspect ratio of the video (after rotation)
       const videoAspectRatio = effectiveWidth / effectiveHeight;
 
-      // Calculate aspect ratio of the container
-      const containerAspectRatio = containerWidth / containerHeight;
-
-      let canvasWidth, canvasHeight;
-
-      // Fill the container as much as possible while maintaining aspect ratio
-      if (videoAspectRatio > containerAspectRatio) {
-        // Video is wider than container (relative to height)
-        canvasWidth = containerWidth;
-        canvasHeight = containerWidth / videoAspectRatio;
-      } else {
-        // Video is taller than container (relative to width)
-        canvasHeight = containerHeight;
-        canvasWidth = containerHeight * videoAspectRatio;
-      }
+      // Set width based on the container height to maintain aspect ratio
+      const canvasWidth = containerHeight * videoAspectRatio;
 
       // Set canvas dimensions
       canvas.width = canvasWidth;
@@ -123,7 +111,7 @@ export default function VideoPlayer({
       console.log(`Canvas sized to ${canvasWidth}x${canvasHeight}`);
     };
 
-    // Function to draw the rotated video on canvas
+    // 2. Update the drawVideo function to match this approach
     const drawVideo = () => {
       if (video.paused || video.ended) return;
 
@@ -143,15 +131,9 @@ export default function VideoPlayer({
       const videoWidth = video.videoWidth;
       const videoHeight = video.videoHeight;
 
-      // For rotated video, we need to swap canvas dimensions when calculating scale
-      const scaleX = canvas.height / videoWidth;
-      const scaleY = canvas.width / videoHeight;
-
-      // Use the smaller scale to ensure nothing gets cut off
-      const scale = Math.min(scaleX, scaleY);
-
-      const scaledWidth = videoWidth * scale;
-      const scaledHeight = videoHeight * scale;
+      // Always use the full height of the canvas (after rotation)
+      const scaledHeight = canvas.width; // Note: this is the height after rotation
+      const scaledWidth = (videoWidth / videoHeight) * scaledHeight;
 
       // Draw video rotated and scaled
       ctx.drawImage(
