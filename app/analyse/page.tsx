@@ -1115,7 +1115,7 @@ export default function VideoCapturePage() {
   };
 
   return (
-    <div className="h-[calc(100vh-4rem)] w-full flex flex-col bg-black text-white">
+    <div className="h-[calc(100vh-4rem)] max-w-screen flex flex-col bg-black text-white">
       <div className="relative flex-grow">
         {!recordedVideoBlob && (
           <Image
@@ -1147,7 +1147,7 @@ export default function VideoCapturePage() {
             </div>
           </div>
         ) : recordedVideoBlob ? (
-          <div className="relative h-full w-full">
+          <div className="relative h-full max-w-screen">
             <VideoPlayer
               videoBlob={trimmedVideoBlob || recordedVideoBlob}
               impactTimeLabel={impactTimeLabel}
