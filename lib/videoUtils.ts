@@ -1,9 +1,5 @@
 /**
- * Utility functions for video processing in the golf swing recorder
- */
-
-/**
- * Trims a video blob to a specific time range
+ * Trims a video blob to a specific time range using a more direct approach
  * @param videoBlob The original video blob
  * @param startTime Start time in seconds
  * @param endTime End time in seconds
@@ -14,191 +10,137 @@ export const trimVideoByTimeRange = async (
     startTime: number,
     endTime: number
   ): Promise<Blob> => {
-    console.log(`Starting trim operation: ${startTime}s to ${endTime}s`);
+    console.log(`Trimming video from ${startTime}s to ${endTime}s`);
   
-    // Create a video element for the source
+    // Create a video element for the source and load metadata
     const sourceVideo = document.createElement('video');
-    sourceVideo.src = URL.createObjectURL(videoBlob);
-    sourceVideo.muted = true; // Mute to avoid audio issues
+    sourceVideo.muted = true;
     
-    // Set up a promise to handle metadata loading
+    // Load the video and wait for metadata
+    const videoUrl = URL.createObjectURL(videoBlob);
+    sourceVideo.src = videoUrl;
+    
     await new Promise<void>((resolve, reject) => {
-      sourceVideo.onloadedmetadata = () => {
-        console.log(`Video metadata loaded: ${sourceVideo.duration}s`);
-        resolve();
-      };
-      sourceVideo.onerror = () => {
-        console.error('Failed to load video metadata');
-        reject(new Error('Failed to load video metadata'));
-      };
+      sourceVideo.onloadedmetadata = () => resolve();
+      sourceVideo.onerror = () => reject(new Error("Failed to load video metadata"));
       sourceVideo.load();
     });
-  
+    
     // Validate trim points
-    if (startTime >= endTime) {
-      throw new Error(
-        `Invalid trim range: start (${startTime}) must be less than end (${endTime})`
-      );
-    }
-  
     if (endTime > sourceVideo.duration) {
-      console.warn(
-        `End time (${endTime}) exceeds video duration (${sourceVideo.duration}). Clamping to video length.`
-      );
+      console.warn(`End time ${endTime}s exceeds video duration ${sourceVideo.duration}s. Clamping.`);
       endTime = sourceVideo.duration;
     }
+    
+    if (startTime >= endTime) {
+      throw new Error(`Invalid trim range: start (${startTime}) must be less than end (${endTime})`);
+    }
   
-    console.log(
-      `Video duration: ${sourceVideo.duration}s, dimensions: ${sourceVideo.videoWidth}x${sourceVideo.videoHeight}`
-    );
-  
-    // Set up canvas for frame extraction
+    // Calculate dimensions - use actual video size if available, otherwise default to HD
+    const width = sourceVideo.videoWidth || 1280;
+    const height = sourceVideo.videoHeight || 720;
+    
+    // Create canvas and get context
     const canvas = document.createElement('canvas');
-    canvas.width = sourceVideo.videoWidth || 1280;
-    canvas.height = sourceVideo.videoHeight || 720;
+    canvas.width = width;
+    canvas.height = height;
     const ctx = canvas.getContext('2d');
-  
+    
     if (!ctx) {
       throw new Error('Could not get canvas context');
     }
-  
-    // Create a stream from the canvas
-    // @ts-ignore
-    const canvasStream = canvas.captureStream(30); // 30 FPS
-  
-    // Try to get audio track
-    let audioTrack: MediaStreamTrack | null = null;
-  
-    try {
-      // Create a new MediaStream from the original video's MediaSource
-      // @ts-ignore
-      const originalStream = sourceVideo.captureStream();
-      const audioTracks = originalStream.getAudioTracks();
-      
-      if (audioTracks.length > 0) {
-        audioTrack = audioTracks[0];
-        if (audioTrack) {
-            canvasStream.addTrack(audioTrack);
-            console.log('Successfully added audio track to canvas stream');
-        }
-      } else {
-        console.log('No audio tracks found in original video');
-      }
-    } catch (err) {
-      console.warn('Audio extraction not supported in this browser:', err);
-    }
-  
-    // Set up MediaRecorder for the trimmed video
+    
+    // Create MediaStream from canvas
+    // @ts-ignore - TypeScript doesn't know about captureStream but browsers support it
+    const canvasStream = canvas.captureStream(30);
+    
+    // Get supported MIME type
     const mimeType = getSupportedMimeType();
-    console.log(`Using MIME type for trimming: ${mimeType}`);
-  
-    const mediaRecorder = new MediaRecorder(canvasStream, {
-      mimeType: mimeType,
-      videoBitsPerSecond: 5000000, // 5Mbps for high quality
+    
+    // Create MediaRecorder
+    const recorder = new MediaRecorder(canvasStream, {
+      mimeType,
+      videoBitsPerSecond: 5000000 // 5 Mbps
     });
-  
-    const trimmedChunks: Blob[] = [];
-    let recordingComplete = false;
-  
-    // Return a promise that resolves with the trimmed blob
+    
+    // Store recorded chunks
+    const chunks: Blob[] = [];
+    recorder.ondataavailable = e => {
+      if (e.data.size > 0) chunks.push(e.data);
+    };
+    
+    // Start recording
+    recorder.start(100); // Capture in 100ms chunks
+    
+    // Create a promise to handle the trim operation
     return new Promise((resolve, reject) => {
-      mediaRecorder.ondataavailable = (e) => {
-        if (e.data.size > 0) {
-          trimmedChunks.push(e.data);
-        }
-      };
-  
-      mediaRecorder.onstop = () => {
-        if (!recordingComplete) {
-          console.warn('MediaRecorder stopped unexpectedly');
-        }
-        
-        console.log('MediaRecorder stopped, creating final video');
-        
+      let frameCount = 0;
+      
+      // Handle when recording is stopped
+      recorder.onstop = () => {
         try {
-          const trimmedBlob = new Blob(trimmedChunks, { type: mimeType });
-          console.log(`Created trimmed blob: ${trimmedBlob.size} bytes`);
+          // Create the final video blob
+          const trimmedBlob = new Blob(chunks, { type: mimeType });
+          console.log(`Created trimmed video: ${trimmedBlob.size} bytes, ${frameCount} frames`);
           
-          // Explicitly clean up resources
-          if (audioTrack) {
-            try {
-              audioTrack.stop();
-            } catch (e) {
-              console.warn('Error stopping audio track:', e);
-            }
-          }
-          
-          URL.revokeObjectURL(sourceVideo.src);
-          sourceVideo.removeAttribute('src');
-          sourceVideo.load();
+          // Clean up resources
+          URL.revokeObjectURL(videoUrl);
+          sourceVideo.src = '';
           
           resolve(trimmedBlob);
         } catch (error) {
-          console.error('Error creating final video:', error);
+          console.error('Error creating trimmed video:', error);
           reject(error);
         }
       };
-  
-      // Start the MediaRecorder
-      mediaRecorder.start(100); // Capture in 100ms chunks for better performance
-  
-      // Use requestAnimationFrame for more reliable frame capturing
-      let frameCount = 0;
       
-      // Helper function to manually draw frames at a consistent rate
-      const captureFrames = () => {
-        // Stop when we reach the end time
+      // Seek to the start position
+      sourceVideo.currentTime = startTime;
+      
+      // Handle errors during processing
+      sourceVideo.onerror = (error) => {
+        console.error('Error during video processing:', error);
+        recorder.stop();
+        reject(new Error('Video processing error'));
+      };
+      
+      // Function to capture frames when the video is playing
+      const captureFrame = () => {
+        // If we've reached or gone past the end time, stop
         if (sourceVideo.currentTime >= endTime) {
-          console.log(`Reached end time (${endTime}s), stopping recorder`);
-          recordingComplete = true;
-          mediaRecorder.stop();
+          console.log(`Reached end time ${endTime}s, stopping`);
+          recorder.stop();
           sourceVideo.pause();
           return;
         }
         
-        // Only draw frames if we're within our target time range
-        if (sourceVideo.currentTime >= startTime) {
-          ctx.drawImage(sourceVideo, 0, 0, canvas.width, canvas.height);
-          frameCount++;
-          
-          // Log progress occasionally
-          if (frameCount % 30 === 0) {
-            console.log(`Processed ${frameCount} frames, current time: ${sourceVideo.currentTime}s`);
-          }
-        }
+        // Draw the current frame to the canvas
+        ctx.drawImage(sourceVideo, 0, 0, width, height);
+        frameCount++;
         
-        // Continue capturing frames
-        requestAnimationFrame(captureFrames);
+        // Request the next frame
+        requestAnimationFrame(captureFrame);
       };
-  
-      sourceVideo.addEventListener('error', (e) => {
-        console.error('Video error during trimming:', e);
-        reject(new Error('Video error during playback for trimming'));
-      });
-  
-      // Start playback to begin capturing
-      sourceVideo.addEventListener('canplay', () => {
-        console.log('Video can play, seeking to start time:', startTime);
+      
+      // Once we've seeked to the start time, start playing and capturing
+      sourceVideo.onseeked = () => {
+        console.log(`Seeked to ${sourceVideo.currentTime}s, starting playback`);
         
-        // Seek to the start time
-        sourceVideo.currentTime = startTime;
-        
-        // Once seeked, start playing and capturing frames
-        sourceVideo.addEventListener('seeked', () => {
-          console.log('Seeked to start time, starting playback');
+        // Start playing the video
+        sourceVideo.play().then(() => {
+          console.log('Video playback started for frame capturing');
           
           // Start capturing frames
-          sourceVideo.play()
-            .then(() => {
-              console.log('Playback started for frame capture');
-              requestAnimationFrame(captureFrames);
-            })
-            .catch(err => {
-              console.error('Error playing video for frame capture:', err);
-              reject(new Error('Failed to play video for frame capture'));
-            });
-        }, { once: true });
-      }, { once: true });
+          requestAnimationFrame(captureFrame);
+        }).catch(error => {
+          console.error('Error playing video for processing:', error);
+          recorder.stop();
+          reject(new Error('Failed to play video for processing'));
+        });
+        
+        // Only run onseeked once
+        sourceVideo.onseeked = null;
+      };
     });
   };
   
