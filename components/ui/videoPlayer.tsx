@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState } from 'react';
 
 type VideoPlayerProps = {
   videoBlob: Blob | null;
@@ -12,7 +12,6 @@ export default function VideoPlayer({
   impactTimeLabel,
 }: VideoPlayerProps) {
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
-  const videoContainerRef = useRef<HTMLDivElement>(null);
 
   // Create the blob URL when the component mounts or when videoBlob changes
   useEffect(() => {
@@ -50,55 +49,10 @@ export default function VideoPlayer({
 
   return (
     <div className="relative h-full w-full flex items-center justify-center bg-black">
-      {/* Video container with rotation style */}
-      <div
-        ref={videoContainerRef}
-        className="relative max-h-full max-w-full"
-        style={{
-          width: '80%',
-          height: '100%',
-          display: 'flex',
-          justifyContent: 'center',
-          alignItems: 'center',
-          overflow: 'hidden',
-        }}
-      >
-        {/* This CSS wrapper handles rotation while keeping controls normal */}
-        <div className="video-rotation-wrapper">
-          <video src={blobUrl} controls playsInline className="rotated-video" />
-        </div>
-
-        {/* Embed the required CSS directly */}
-        <style jsx>{`
-          .video-rotation-wrapper {
-            width: 100%;
-            height: 100%;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            overflow: hidden;
-          }
-
-          /* The trick: Apply rotation only to the video content, not to the controls */
-          .video-rotation-wrapper video {
-            transform: rotate(90deg);
-            object-fit: contain;
-            max-height: none;
-            max-width: none;
-            width: 100vh; /* Use viewport height as width */
-            height: auto;
-            background: black;
-          }
-
-          /* Hide native controls and only show when hovering */
-          .video-rotation-wrapper video::-webkit-media-controls {
-            transform: rotate(0deg); /* Keep controls normal */
-            transform-origin: bottom center;
-            position: absolute;
-            bottom: 0;
-            width: 100%;
-          }
-        `}</style>
+      {/* Here's the key trick: transform-box creates boundaries for transform-origin */}
+      <div className="transform-box-wrapper">
+        {/* Video with controls */}
+        <video src={blobUrl} controls playsInline className="video-element" />
       </div>
 
       {/* Impact time label */}
@@ -107,6 +61,43 @@ export default function VideoPlayer({
           Impact at {impactTimeLabel}
         </div>
       )}
+
+      {/* Styling for rotation - the key here is the global CSS approach */}
+      <style jsx global>{`
+        /* Wrapper for transform context */
+        .transform-box-wrapper {
+          position: relative;
+          height: 100%;
+          width: 80%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          overflow: hidden;
+        }
+
+        /* Video element with rotation */
+        .video-element {
+          transform: rotate(90deg);
+          width: 100vh; /* Use viewport height */
+          height: auto;
+          max-width: none !important;
+          object-fit: contain;
+          background: black;
+        }
+
+        /* The critical part: Keep controls unrotated */
+        video::-webkit-media-controls-enclosure {
+          transform: rotate(-90deg);
+          transform-origin: center center;
+        }
+
+        /* For Firefox */
+        @supports (-moz-appearance: none) {
+          .video-element {
+            transform-origin: center;
+          }
+        }
+      `}</style>
     </div>
   );
 }
