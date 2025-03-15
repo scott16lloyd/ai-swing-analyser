@@ -345,16 +345,17 @@ export default function VideoPlayer({
       {/* Video container - takes most of the available space */}
       <div
         ref={videoContainerRef}
-        className="flex-grow flex items-center justify-center w-full overflow-hidden"
+        className="flex-grow flex justify-center w-full overflow-hidden"
         style={{ height: 'calc(100% - 70px)' }} // Reduced control height
       >
         {/* Canvas to display rotated video */}
-        <canvas
-          ref={canvasRef}
-          className="bg-black cursor-pointer max-w-full max-h-full"
-          onClick={togglePlay}
-        />
-
+        <div className="h-full relative">
+          <canvas
+            ref={canvasRef}
+            className="bg-black cursor-pointer h-full"
+            onClick={togglePlay}
+          />
+        </div>
         {/* Play/pause overlay */}
         {!isPlaying && (
           <div
