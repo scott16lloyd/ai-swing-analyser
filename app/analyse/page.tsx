@@ -1,4 +1,10 @@
 'use client';
+import VideoPlayer from '@/components/ui/videoPlayer';
+import {
+  trimVideoByTimeRange,
+  getSupportedMimeType,
+  formatDuration,
+} from '@/lib/videoUtils';
 
 declare global {
   interface Window {
@@ -331,21 +337,20 @@ export default function VideoCapturePage() {
     // Create a video element for the source
     const sourceVideo = document.createElement('video');
     sourceVideo.src = URL.createObjectURL(videoBlob);
+    sourceVideo.muted = true; // Mute to avoid audio issues
 
     // Set up a promise to handle metadata loading
     await new Promise<void>((resolve, reject) => {
       sourceVideo.onloadedmetadata = () => {
-        sourceVideo.currentTime = 0; // Reset to beginning
+        console.log(`Video metadata loaded: ${sourceVideo.duration}s`);
         resolve();
       };
-      sourceVideo.onerror = () =>
+      sourceVideo.onerror = () => {
+        console.error('Failed to load video metadata');
         reject(new Error('Failed to load video metadata'));
+      };
       sourceVideo.load();
     });
-
-    console.log(
-      `Video duration: ${sourceVideo.duration}s, dimensions: ${sourceVideo.videoWidth}x${sourceVideo.videoHeight}`
-    );
 
     // Validate trim points
     if (startTime >= endTime) {
@@ -361,10 +366,14 @@ export default function VideoCapturePage() {
       endTime = sourceVideo.duration;
     }
 
+    console.log(
+      `Video duration: ${sourceVideo.duration}s, dimensions: ${sourceVideo.videoWidth}x${sourceVideo.videoHeight}`
+    );
+
     // Set up canvas for frame extraction
     const canvas = document.createElement('canvas');
-    canvas.width = sourceVideo.videoWidth;
-    canvas.height = sourceVideo.videoHeight;
+    canvas.width = sourceVideo.videoWidth || 1280;
+    canvas.height = sourceVideo.videoHeight || 720;
     const ctx = canvas.getContext('2d');
 
     if (!ctx) {
@@ -375,36 +384,26 @@ export default function VideoCapturePage() {
     // @ts-ignore
     const canvasStream = canvas.captureStream(30); // 30 FPS
 
-    // Try to get audio from the original video
-    let audioTrack: MediaStreamTrack | undefined;
+    // Try to get audio track
+    let audioTrack: MediaStreamTrack | null = null;
+
     try {
-      // Create a temporary video element to extract audio
-      await new Promise<void>((resolve) => {
-        sourceVideo.addEventListener('canplay', () => resolve(), {
-          once: true,
-        });
-        // Ensure it's ready to play
-        sourceVideo.load();
-      });
-
-      await sourceVideo.play();
-      sourceVideo.pause();
-
+      // Create a new MediaStream from the original video's MediaSource
       // @ts-ignore
-      const tempStream = sourceVideo.captureStream();
-      const audioTracks = tempStream.getAudioTracks();
+      const originalStream = sourceVideo.captureStream();
+      const audioTracks = originalStream.getAudioTracks();
 
       if (audioTracks.length > 0) {
         audioTrack = audioTracks[0];
         if (audioTrack) {
           canvasStream.addTrack(audioTrack);
-          console.log('Successfully added audio track to stream');
+          console.log('Successfully added audio track to canvas stream');
         }
       } else {
-        console.warn('No audio tracks found in source video');
+        console.log('No audio tracks found in original video');
       }
     } catch (err) {
-      console.warn('Could not extract audio track:', err);
+      console.warn('Audio extraction not supported in this browser:', err);
     }
 
     // Set up MediaRecorder for the trimmed video
@@ -417,77 +416,119 @@ export default function VideoCapturePage() {
     });
 
     const trimmedChunks: Blob[] = [];
+    let recordingComplete = false;
 
     // Return a promise that resolves with the trimmed blob
     return new Promise((resolve, reject) => {
       mediaRecorder.ondataavailable = (e) => {
         if (e.data.size > 0) {
           trimmedChunks.push(e.data);
-          console.log(`Received chunk: ${e.data.size} bytes`);
         }
       };
 
       mediaRecorder.onstop = () => {
-        console.log('MediaRecorder stopped, finalizing trimmed video');
-
-        // Create final blob from recorded chunks
-        const trimmedBlob = new Blob(trimmedChunks, { type: mimeType });
-        console.log(`Created trimmed blob: ${trimmedBlob.size} bytes`);
-
-        // Clean up
-        URL.revokeObjectURL(sourceVideo.src);
-
-        if (audioTrack) {
-          audioTrack.stop();
+        if (!recordingComplete) {
+          console.warn('MediaRecorder stopped unexpectedly');
         }
 
-        resolve(trimmedBlob);
+        console.log('MediaRecorder stopped, creating final video');
+
+        try {
+          const trimmedBlob = new Blob(trimmedChunks, { type: mimeType });
+          console.log(`Created trimmed blob: ${trimmedBlob.size} bytes`);
+
+          // Explicitly clean up resources
+          if (audioTrack) {
+            try {
+              audioTrack.stop();
+            } catch (e) {
+              console.warn('Error stopping audio track:', e);
+            }
+          }
+
+          URL.revokeObjectURL(sourceVideo.src);
+          sourceVideo.removeAttribute('src');
+          sourceVideo.load();
+
+          resolve(trimmedBlob);
+        } catch (error) {
+          console.error('Error creating final video:', error);
+          reject(error);
+        }
       };
 
-      mediaRecorder.onerror = (event) => {
-        console.error('MediaRecorder error during trimming:', event);
-        reject(new Error('MediaRecorder error during trimming'));
-      };
+      // Start the MediaRecorder
+      mediaRecorder.start(100); // Capture in 100ms chunks for better performance
 
-      // Start recording
-      mediaRecorder.start(100);
-      console.log('MediaRecorder started for trimming');
+      // Use requestAnimationFrame for more reliable frame capturing
+      let lastDrawTime = 0;
+      let frameCount = 0;
 
-      // Set video to the start time
-      sourceVideo.currentTime = startTime;
+      // Helper function to manually draw frames at a consistent rate
+      const captureFrames = () => {
+        // Stop when we reach the end time
+        if (sourceVideo.currentTime >= endTime) {
+          console.log(`Reached end time (${endTime}s), stopping recorder`);
+          recordingComplete = true;
+          mediaRecorder.stop();
+          sourceVideo.pause();
+          return;
+        }
 
-      // Function to process each frame
-      const processFrame = async () => {
-        if (
-          sourceVideo.currentTime >= startTime &&
-          sourceVideo.currentTime <= endTime
-        ) {
-          // Draw current frame to canvas
+        // Only draw frames if we're within our target time range
+        if (sourceVideo.currentTime >= startTime) {
           ctx.drawImage(sourceVideo, 0, 0, canvas.width, canvas.height);
+          frameCount++;
 
-          // If we're not at the end yet, request the next frame
-          if (sourceVideo.currentTime < endTime) {
-            sourceVideo.currentTime += 1 / 30; // Approximate a frame
-            return; // We'll continue in the onseeked event
+          // Log progress occasionally
+          if (frameCount % 30 === 0) {
+            console.log(
+              `Processed ${frameCount} frames, current time: ${sourceVideo.currentTime}s`
+            );
           }
         }
 
-        // We've reached the end of our desired portion
-        console.log(`Reached end of trim range at ${sourceVideo.currentTime}s`);
-        setTimeout(() => {
-          mediaRecorder.stop();
-        }, 100);
+        // Continue capturing frames
+        requestAnimationFrame(captureFrames);
       };
 
-      // Start processing frames when seeking is complete
-      sourceVideo.onseeked = processFrame;
+      sourceVideo.addEventListener('error', (e) => {
+        console.error('Video error during trimming:', e);
+        reject(new Error('Video error during playback for trimming'));
+      });
 
-      // Handle errors
-      sourceVideo.onerror = (event) => {
-        console.error('Error during video trimming:', event);
-        mediaRecorder.stop();
-        reject(new Error('Video processing error'));
-      };
+      // Start playback to begin capturing
+      sourceVideo.addEventListener(
+        'canplay',
+        () => {
+          console.log('Video can play, seeking to start time:', startTime);
+
+          // Seek to the start time
+          sourceVideo.currentTime = startTime;
+
+          // Once seeked, start playing and capturing frames
+          sourceVideo.addEventListener(
+            'seeked',
+            () => {
+              console.log('Seeked to start time, starting playback');
+
+              // Start capturing frames
+              sourceVideo
+                .play()
+                .then(() => {
+                  console.log('Playback started for frame capture');
+                  requestAnimationFrame(captureFrames);
+                })
+                .catch((err) => {
+                  console.error('Error playing video for frame capture:', err);
+                  reject(new Error('Failed to play video for frame capture'));
+                });
+            },
+            { once: true }
+          );
+        },
+        { once: true }
+      );
     });
   };
 
@@ -521,6 +562,9 @@ export default function VideoCapturePage() {
           chunksRef.current.push(event.data);
         }
       };
+
+      // This should replace the code in your mediaRecorder.onstop handler
+      // inside the startRecording function
 
       mediaRecorder.onstop = async () => {
         if (recordingTimerRef.current) {
@@ -589,27 +633,12 @@ export default function VideoCapturePage() {
                 setImpactTimeLabel(storedImpactTime);
               }
 
-              // Force the UI to update with the trimmed video
+              // Schedule the video preparation for after state updates
               setTimeout(() => {
                 setIsProcessing(false);
 
-                // Force the video element to use the trimmed video
-                if (previewVideoRef.current) {
-                  const url = URL.createObjectURL(trimmedBlob);
-                  previewVideoRef.current.src = url;
-                  previewVideoRef.current.load();
-
-                  // Use a very small timeout before playing to ensure loading completes
-                  setTimeout(() => {
-                    if (previewVideoRef.current) {
-                      previewVideoRef.current
-                        .play()
-                        .catch((e) =>
-                          console.error('Error playing trimmed video:', e)
-                        );
-                    }
-                  }, 50);
-                }
+                // Use our new function for reliable playback
+                prepareVideoForPlayback(trimmedBlob);
 
                 toast({
                   title: 'Video Processed',
@@ -624,6 +653,9 @@ export default function VideoCapturePage() {
               setTrimmedVideoBlob(null); // Explicitly clear trimmed video
               setIsProcessing(false);
 
+              // Prepare the full video for playback
+              prepareVideoForPlayback(fullVideoBlob);
+
               toast({
                 title: 'Trimming Failed',
                 description: 'Using the full video instead',
@@ -636,6 +668,9 @@ export default function VideoCapturePage() {
             setRecordedVideoBlob(fullVideoBlob);
             setTrimmedVideoBlob(null); // Explicitly clear trimmed video
             setIsProcessing(false);
+
+            // Prepare the full video for playback
+            prepareVideoForPlayback(fullVideoBlob);
           }
         } catch (error) {
           console.error('Error processing video:', error);
@@ -644,6 +679,9 @@ export default function VideoCapturePage() {
           setRecordedVideoBlob(fullVideoBlob);
           setTrimmedVideoBlob(null); // Explicitly clear trimmed video
           setIsProcessing(false);
+
+          // Prepare the full video for playback
+          prepareVideoForPlayback(fullVideoBlob);
 
           toast({
             title: 'Processing Error',
@@ -1033,6 +1071,49 @@ export default function VideoCapturePage() {
     return `${mins}:${secs.toString().padStart(2, '0')}.${ms}`;
   };
 
+  const prepareVideoForPlayback = (blob: Blob) => {
+    if (!previewVideoRef.current) return;
+
+    // Create a new object URL to avoid potential caching issues
+    const url = URL.createObjectURL(blob);
+
+    // Clear any existing blob URLs first
+    if (
+      previewVideoRef.current.src &&
+      previewVideoRef.current.src.startsWith('blob:')
+    ) {
+      URL.revokeObjectURL(previewVideoRef.current.src);
+    }
+
+    // Set the source to the new blob URL
+    previewVideoRef.current.src = url;
+
+    // Wait for the video to load metadata before trying to play
+    previewVideoRef.current.onloadedmetadata = () => {
+      console.log(
+        `Video metadata loaded. Duration: ${previewVideoRef.current?.duration}s`
+      );
+      // Reset the playback position to the start
+      if (previewVideoRef.current) {
+        previewVideoRef.current.currentTime = 0;
+      }
+    };
+
+    // Wait for the video to be ready to play
+    previewVideoRef.current.oncanplay = () => {
+      console.log('Video can play, starting playback');
+      if (previewVideoRef.current) {
+        previewVideoRef.current
+          .play()
+          .then(() => console.log('Playback started successfully'))
+          .catch((err) => console.error('Error starting playback:', err));
+      }
+    };
+
+    // Force a reload to apply the new source
+    previewVideoRef.current.load();
+  };
+
   return (
     <div className="h-[calc(100vh-4rem)] w-full flex flex-col bg-black text-white">
       <div className="relative flex-grow">
@@ -1068,19 +1149,11 @@ export default function VideoCapturePage() {
         ) : recordedVideoBlob ? (
           // Show recorded video playback
           <div className="relative h-full w-full">
-            <video
-              key={`video-${trimmedVideoBlob ? 'trimmed' : 'full'}-${Date.now()}`}
-              src={getVideoUrl()}
-              className="h-full w-full object-contain"
-              controls
-              autoPlay
-              ref={previewVideoRef}
+            <VideoPlayer
+              videoBlob={trimmedVideoBlob || recordedVideoBlob}
+              impactTimeLabel={impactTimeLabel}
             />
-            {impactTimeLabel && (
-              <div className="absolute top-4 left-4 bg-blue-600 text-white px-3 py-1 rounded-full text-sm">
-                Impact at {impactTimeLabel}
-              </div>
-            )}
+
             {trimmedVideoBlob && (
               <div className="absolute top-4 right-4 bg-green-600 text-white px-3 py-1 rounded-full text-sm">
                 Auto-trimmed
