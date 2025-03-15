@@ -80,8 +80,8 @@ export default function VideoPlayer({
       // Calculate video dimensions (width and height are swapped because of rotation)
       const videoRatio = video.videoHeight / video.videoWidth; // Height/width because we're rotating
 
-      // Target height is half of available height
-      const targetHeight = containerHeight * 0.5;
+      // Target height is 70% of available height (increased from 50%)
+      const targetHeight = containerHeight * 0.7;
 
       // Calculate width based on video ratio, ensuring it fits within container
       let canvasWidth = Math.min(containerWidth, targetHeight / videoRatio);
@@ -323,10 +323,10 @@ export default function VideoPlayer({
         preload="metadata"
       />
 
-      {/* Canvas container - set to approximately half height */}
+      {/* Canvas container - set to approximately 70% height for larger display */}
       <div
         className="flex-grow flex items-center justify-center w-full"
-        style={{ maxHeight: '50%' }}
+        style={{ maxHeight: '70%' }}
       >
         {/* Canvas to display rotated video */}
         <canvas
@@ -352,7 +352,7 @@ export default function VideoPlayer({
             <div className="bg-black/30 rounded-full p-3">
               <svg
                 xmlns="http://www.w3.org/2000/svg"
-                className="h-8 w-8 text-white"
+                className="h-10 w-10 text-white"
                 fill="none"
                 viewBox="0 0 24 24"
                 stroke="currentColor"
@@ -376,19 +376,19 @@ export default function VideoPlayer({
       </div>
 
       {/* Custom controls that remain in normal orientation */}
-      <div className="w-full px-4 py-2 bg-black/70 mt-2">
+      <div className="w-full px-4 py-3 bg-black/70 mt-2">
         {/* Progress bar */}
         <div className="flex items-center space-x-2 mb-2">
-          <span className="text-white text-xs">{formatTime(currentTime)}</span>
+          <span className="text-white text-sm">{formatTime(currentTime)}</span>
           <input
             type="range"
             min="0"
             max={duration}
             value={currentTime}
             onChange={handleSeek}
-            className="flex-grow h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer"
+            className="flex-grow h-2 bg-gray-600 rounded-lg appearance-none cursor-pointer"
           />
-          <span className="text-white text-xs">{formatTime(duration)}</span>
+          <span className="text-white text-sm">{formatTime(duration)}</span>
         </div>
 
         {/* Control buttons */}
@@ -403,7 +403,7 @@ export default function VideoPlayer({
               {isPlaying ? (
                 <svg
                   xmlns="http://www.w3.org/2000/svg"
-                  className="h-6 w-6"
+                  className="h-7 w-7"
                   fill="none"
                   viewBox="0 0 24 24"
                   stroke="currentColor"
@@ -418,7 +418,7 @@ export default function VideoPlayer({
               ) : (
                 <svg
                   xmlns="http://www.w3.org/2000/svg"
-                  className="h-6 w-6"
+                  className="h-7 w-7"
                   fill="none"
                   viewBox="0 0 24 24"
                   stroke="currentColor"
@@ -449,7 +449,7 @@ export default function VideoPlayer({
                 {isMuted ? (
                   <svg
                     xmlns="http://www.w3.org/2000/svg"
-                    className="h-6 w-6"
+                    className="h-7 w-7"
                     fill="none"
                     viewBox="0 0 24 24"
                     stroke="currentColor"
@@ -471,7 +471,7 @@ export default function VideoPlayer({
                 ) : (
                   <svg
                     xmlns="http://www.w3.org/2000/svg"
-                    className="h-6 w-6"
+                    className="h-7 w-7"
                     fill="none"
                     viewBox="0 0 24 24"
                     stroke="currentColor"
@@ -492,7 +492,7 @@ export default function VideoPlayer({
                 step="0.05"
                 value={volume}
                 onChange={handleVolumeChange}
-                className="w-16 h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer"
+                className="w-20 h-2 bg-gray-600 rounded-lg appearance-none cursor-pointer"
                 aria-label="Volume"
               />
             </div>

@@ -136,7 +136,6 @@ export function VideoUploadButton({
 }: VideoUploadButtonProps) {
   const [uploading, setUploading] = useState<boolean>(false);
   const [progress, setProgress] = useState<number>(0);
-  const [diagnosticResult, setDiagnosticResult] = useState<any>(null);
   const { toast } = useToast();
 
   const updateProgress = (value: number) => {
@@ -149,7 +148,6 @@ export function VideoUploadButton({
       toast({ title: 'Running diagnostic test...' });
       const storageModule = await import('@/app/actions/storage');
       const result = await storageModule.testGoogleCloudStorage();
-      setDiagnosticResult(result);
       toast({
         title: result.success ? 'Test succeeded' : 'Test failed',
         description: result.success
@@ -248,18 +246,6 @@ export function VideoUploadButton({
       >
         Run Diagnostic Test
       </button>
-
-      {/* Display diagnostic results if available */}
-      {diagnosticResult && (
-        <div className="mt-2 p-2 bg-gray-100 rounded text-sm">
-          <p>
-            Diagnostic result:{' '}
-            {diagnosticResult.success ? '✅ Success' : '❌ Failed'}
-          </p>
-          {diagnosticResult.status && <p>Status: {diagnosticResult.status}</p>}
-          {diagnosticResult.error && <p>Error: {diagnosticResult.error}</p>}
-        </div>
-      )}
     </div>
   );
 }
