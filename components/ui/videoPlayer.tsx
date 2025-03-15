@@ -12,10 +12,10 @@ export default function VideoPlayer({
   impactTimeLabel,
 }: VideoPlayerProps) {
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
-  const [videoOrientation, setVideoOrientation] = useState<
-    'portrait' | 'landscape'
-  >('landscape');
   const videoRef = useRef<HTMLVideoElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [isPortrait, setIsPortrait] = useState(false);
+  const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
 
   // Create the blob URL when the component mounts or when videoBlob changes
   useEffect(() => {
@@ -48,17 +48,49 @@ export default function VideoPlayer({
     if (videoRef.current) {
       const video = videoRef.current;
 
-      // Use a timeout to ensure dimensions are available
-      setTimeout(() => {
-        if (video.videoHeight > video.videoWidth) {
-          setVideoOrientation('portrait');
-          console.log('Detected portrait video orientation');
-        } else {
-          setVideoOrientation('landscape');
-          console.log('Detected landscape video orientation');
-        }
-      }, 100);
+      // Get the natural dimensions of the video
+      const videoWidth = video.videoWidth;
+      const videoHeight = video.videoHeight;
+
+      console.log(`Video dimensions: ${videoWidth}x${videoHeight}`);
+
+      // Determine if the video is portrait oriented
+      const isVideoPortrait = videoHeight > videoWidth;
+      setIsPortrait(isVideoPortrait);
+
+      // Set dimensions for appropriate styling
+      setDimensions({
+        width: videoWidth,
+        height: videoHeight,
+      });
+
+      console.log(
+        `Video orientation: ${isVideoPortrait ? 'portrait' : 'landscape'}`
+      );
     }
+  };
+
+  // Apply video styles based on orientation
+  const getVideoStyles = () => {
+    // Base styles
+    const styles: React.CSSProperties = {
+      maxHeight: '100%',
+      maxWidth: '100%',
+      objectFit: 'contain',
+    };
+
+    // Add orientation-specific styles
+    if (isPortrait) {
+      // For portrait videos on mobile (iPhone, etc.)
+      return {
+        ...styles,
+        width: 'auto',
+        height: '100%',
+        maxWidth: '80%',
+      };
+    }
+
+    return styles;
   };
 
   if (!blobUrl) {
@@ -70,18 +102,15 @@ export default function VideoPlayer({
   }
 
   return (
-    <div className="relative h-full w-full flex items-center justify-center bg-black">
+    <div
+      ref={containerRef}
+      className="relative h-full w-full flex items-center justify-center bg-black"
+    >
       {/* Super simple video element with minimal props */}
       <video
         ref={videoRef}
         src={blobUrl}
-        className={`h-full w-full object-contain ${videoOrientation === 'portrait' ? 'portait-video' : 'w-full'}`}
-        style={{
-          // For portrait videos, set a max-width to prevent stretching
-          ...(videoOrientation === 'portrait' && {
-            maxWidth: '75vh', // Limit width for portrait videos
-          }),
-        }}
+        style={getVideoStyles()}
         controls
         playsInline
         onLoadedMetadata={handleVideoLoaded}
@@ -93,13 +122,6 @@ export default function VideoPlayer({
           Impact at {impactTimeLabel}
         </div>
       )}
-
-      <style jsx>{`
-        .portrait-video {
-          max-height: 100%;
-          width: auto;
-        }
-      `}</style>
     </div>
   );
 }
