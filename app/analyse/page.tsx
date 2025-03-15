@@ -1147,7 +1147,6 @@ export default function VideoCapturePage() {
             </div>
           </div>
         ) : recordedVideoBlob ? (
-          // Show recorded video playback
           <div className="relative h-full w-full">
             <VideoPlayer
               videoBlob={trimmedVideoBlob || recordedVideoBlob}

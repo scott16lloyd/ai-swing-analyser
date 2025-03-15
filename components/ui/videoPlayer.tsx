@@ -1,76 +1,63 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useEffect, useState } from 'react';
 
-interface VideoPlayerProps {
+type VideoPlayerProps = {
   videoBlob: Blob | null;
-  impactTimeLabel: string | null;
-}
+  impactTimeLabel?: string | null;
+};
 
-const VideoPlayer = ({ videoBlob, impactTimeLabel }: VideoPlayerProps) => {
-  const [videoURL, setVideoURL] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+export default function VideoPlayer({
+  videoBlob,
+  impactTimeLabel,
+}: VideoPlayerProps) {
+  const [blobUrl, setBlobUrl] = useState<string | null>(null);
 
-  // Create and manage the video URL
+  // Create the blob URL when the component mounts or when videoBlob changes
   useEffect(() => {
-    // Clean up previous URL if it exists
-    if (videoURL) {
-      URL.revokeObjectURL(videoURL);
+    // Clean up any existing blob URL
+    if (blobUrl) {
+      URL.revokeObjectURL(blobUrl);
     }
 
-    // If we have a new video blob, create a URL for it
+    // Create a new blob URL if we have a video blob
     if (videoBlob) {
-      const newURL = URL.createObjectURL(videoBlob);
-      console.log(
-        `Created new URL for video: ${newURL}, size: ${videoBlob.size} bytes`
-      );
-      setVideoURL(newURL);
-      setIsLoading(true);
+      const url = URL.createObjectURL(videoBlob);
+      setBlobUrl(url);
+      console.log('Created blob URL:', url);
     } else {
-      setVideoURL(null);
+      setBlobUrl(null);
     }
 
-    // Clean up when component unmounts or videoBlob changes
+    // Cleanup function to revoke the URL when the component unmounts
+    // or when the videoBlob changes
     return () => {
-      if (videoURL) {
-        console.log(`Revoking URL: ${videoURL}`);
-        URL.revokeObjectURL(videoURL);
+      if (blobUrl) {
+        console.log('Revoking blob URL:', blobUrl);
+        URL.revokeObjectURL(blobUrl);
       }
     };
-  }, [videoBlob]); // Only re-run when videoBlob changes
+  }, [videoBlob]);
 
-  const handleVideoLoaded = () => {
-    console.log('Video loaded and ready to play');
-    setIsLoading(false);
-  };
+  if (!blobUrl) {
+    return (
+      <div className="flex items-center justify-center h-full">
+        No video available
+      </div>
+    );
+  }
 
   return (
     <div className="relative h-full w-full">
-      {/* Loading indicator */}
-      {isLoading && videoURL && (
-        <div className="absolute inset-0 flex items-center justify-center bg-black/50 z-10">
-          <div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
-          <span className="ml-3 text-white">Loading video...</span>
-        </div>
-      )}
+      {/* Super simple video element with minimal props */}
+      <video
+        src={blobUrl}
+        className="h-full w-full object-contain bg-black"
+        controls
+        playsInline
+      />
 
-      {/* Display the video with URL */}
-      {videoURL ? (
-        <video
-          src={videoURL}
-          className="h-full w-full object-contain"
-          controls
-          playsInline
-          onLoadedData={handleVideoLoaded}
-          onError={(e) => console.error('Video error:', e)}
-        />
-      ) : (
-        <div className="flex items-center justify-center h-full w-full bg-gray-900">
-          <p className="text-white">No video available</p>
-        </div>
-      )}
-
-      {/* Impact time indicator */}
+      {/* Optional impact time display */}
       {impactTimeLabel && (
         <div className="absolute top-4 left-4 bg-blue-600 text-white px-3 py-1 rounded-full text-sm">
           Impact at {impactTimeLabel}
@@ -78,6 +65,4 @@ const VideoPlayer = ({ videoBlob, impactTimeLabel }: VideoPlayerProps) => {
       )}
     </div>
   );
-};
-
-export default VideoPlayer;
+}
