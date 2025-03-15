@@ -5,17 +5,17 @@ import { useEffect, useState, useRef } from 'react';
 type VideoPlayerProps = {
   videoBlob: Blob | null;
   impactTimeLabel?: string | null;
+  forcePortrait?: boolean; // Add this prop to force portrait mode
 };
 
 export default function VideoPlayer({
   videoBlob,
   impactTimeLabel,
+  forcePortrait = true, // Default to forcing portrait for mobile recordings
 }: VideoPlayerProps) {
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const [isPortrait, setIsPortrait] = useState(false);
-  const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
 
   // Create the blob URL when the component mounts or when videoBlob changes
   useEffect(() => {
@@ -43,56 +43,6 @@ export default function VideoPlayer({
     };
   }, [videoBlob]);
 
-  // Detect video orientation after metadata is loaded
-  const handleVideoLoaded = () => {
-    if (videoRef.current) {
-      const video = videoRef.current;
-
-      // Get the natural dimensions of the video
-      const videoWidth = video.videoWidth;
-      const videoHeight = video.videoHeight;
-
-      console.log(`Video dimensions: ${videoWidth}x${videoHeight}`);
-
-      // Determine if the video is portrait oriented
-      const isVideoPortrait = videoHeight > videoWidth;
-      setIsPortrait(isVideoPortrait);
-
-      // Set dimensions for appropriate styling
-      setDimensions({
-        width: videoWidth,
-        height: videoHeight,
-      });
-
-      console.log(
-        `Video orientation: ${isVideoPortrait ? 'portrait' : 'landscape'}`
-      );
-    }
-  };
-
-  // Apply video styles based on orientation
-  const getVideoStyles = () => {
-    // Base styles
-    const styles: React.CSSProperties = {
-      maxHeight: '100%',
-      maxWidth: '100%',
-      objectFit: 'contain',
-    };
-
-    // Add orientation-specific styles
-    if (isPortrait) {
-      // For portrait videos on mobile (iPhone, etc.)
-      return {
-        ...styles,
-        width: 'auto',
-        height: '100%',
-        maxWidth: '80%',
-      };
-    }
-
-    return styles;
-  };
-
   if (!blobUrl) {
     return (
       <div className="flex items-center justify-center h-full">
@@ -104,21 +54,42 @@ export default function VideoPlayer({
   return (
     <div
       ref={containerRef}
-      className="relative h-full w-full flex items-center justify-center bg-black"
+      className="relative h-full w-full flex items-center justify-center bg-black overflow-hidden"
     >
-      {/* Super simple video element with minimal props */}
-      <video
-        ref={videoRef}
-        src={blobUrl}
-        style={getVideoStyles()}
-        controls
-        playsInline
-        onLoadedMetadata={handleVideoLoaded}
-      />
+      <div
+        className={`video-container ${forcePortrait ? 'force-portrait' : ''}`}
+        style={{
+          width: '100%',
+          height: '100%',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}
+      >
+        <video
+          ref={videoRef}
+          src={blobUrl}
+          className="video-element"
+          style={{
+            maxHeight: forcePortrait ? '100%' : '100%',
+            maxWidth: forcePortrait ? '80%' : '100%',
+            objectFit: 'contain',
+            // This transform is the key to forcing portrait orientation
+            ...(forcePortrait && {
+              transform: 'rotate(90deg)',
+              width: '100vh', // Use viewport height for width
+              maxWidth: 'unset',
+              height: 'auto',
+            }),
+          }}
+          controls
+          playsInline
+        />
+      </div>
 
       {/* Optional impact time display */}
       {impactTimeLabel && (
-        <div className="absolute top-4 left-4 bg-blue-600 text-white px-3 py-1 rounded-full text-sm">
+        <div className="absolute top-4 left-4 bg-blue-600 text-white px-3 py-1 rounded-full text-sm z-10">
           Impact at {impactTimeLabel}
         </div>
       )}
