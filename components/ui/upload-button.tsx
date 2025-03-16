@@ -142,28 +142,6 @@ export function VideoUploadButton({
     setProgress(value);
   };
 
-  // Add diagnostic test function
-  const runDiagnosticTest = async () => {
-    try {
-      toast({ title: 'Running diagnostic test...' });
-      const storageModule = await import('@/app/actions/storage');
-      const result = await storageModule.testGoogleCloudStorage();
-      toast({
-        title: result.success ? 'Test succeeded' : 'Test failed',
-        description: result.success
-          ? 'Diagnostic upload worked'
-          : `Failed with status: ${result.status}`,
-      });
-    } catch (error) {
-      console.error('Diagnostic test error:', error);
-      toast({
-        title: 'Diagnostic test error',
-        description: error instanceof Error ? error.message : 'Unknown error',
-        variant: 'destructive',
-      });
-    }
-  };
-
   const handleProcessVideo = async () => {
     if (!videoBlob) {
       toast({
@@ -237,15 +215,6 @@ export function VideoUploadButton({
           ></div>
         </div>
       )}
-
-      {/* Add diagnostic test button */}
-      <button
-        className="mt-2 px-4 py-2 bg-gray-500 text-white rounded-md"
-        onClick={runDiagnosticTest}
-        disabled={uploading}
-      >
-        Run Diagnostic Test
-      </button>
     </div>
   );
 }

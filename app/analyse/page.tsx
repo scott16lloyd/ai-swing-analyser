@@ -4,6 +4,7 @@ import {
   trimVideoByTimeRange,
   getSupportedMimeType,
   formatDuration,
+  getVideoDuration,
 } from '@/lib/videoUtils';
 
 declare global {
@@ -54,16 +55,12 @@ export default function VideoCapturePage() {
   const autoStopTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const lastImpactTimeRef = useRef<string | null>(null);
   let globalImpactTime: string | null = null;
+  const currentDurationRef = useRef<number>(0);
 
   const { toast } = useToast();
 
   useEffect(() => {
     startCamera();
-    // Only in development mode
-    if (process.env.NODE_ENV === 'development') {
-      const cleanup = addTestButtons();
-      return cleanup;
-    }
     return () => {
       stopCamera();
       stopImpactDetection();
@@ -82,38 +79,6 @@ export default function VideoCapturePage() {
       globalImpactTime = null;
     };
   }, []);
-
-  const requestAudioPermission = async () => {
-    try {
-      // Explicitly request audio permission separately
-      const audioStream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: false,
-          noiseSuppression: false,
-          autoGainControl: false,
-        },
-      });
-
-      // Stop the stream immediately, we just needed the permission
-      audioStream.getTracks().forEach((track) => track.stop());
-
-      toast({
-        title: 'Microphone Access',
-        description: 'Microphone permission granted for clap detection',
-        variant: 'default',
-      });
-
-      return true;
-    } catch (error) {
-      console.error('Failed to get audio permission:', error);
-      toast({
-        title: 'Warning',
-        description: 'Microphone access denied. Clap detection will not work.',
-        variant: 'destructive',
-      });
-      return false;
-    }
-  };
 
   const startCamera = async (): Promise<void> => {
     try {
@@ -160,95 +125,6 @@ export default function VideoCapturePage() {
         `Could not access ${cameraFacing === 'user' ? 'front' : 'back'} camera or microphone.`
       );
       stopCamera();
-    }
-  };
-
-  const addTestButtons = () => {
-    // Add a test div with controls
-    const testDiv = document.createElement('div');
-    testDiv.style.position = 'absolute';
-    testDiv.style.bottom = '200px';
-    testDiv.style.left = '10px';
-    testDiv.style.padding = '10px';
-    testDiv.style.backgroundColor = 'rgba(0,0,0,0.7)';
-    testDiv.style.color = 'white';
-    testDiv.style.zIndex = '1000';
-    testDiv.style.borderRadius = '5px';
-
-    // Add a test button to manually trigger recording stop
-    const stopButton = document.createElement('button');
-    stopButton.innerText = 'Test Stop Recording';
-    stopButton.style.backgroundColor = 'red';
-    stopButton.style.color = 'white';
-    stopButton.style.padding = '8px';
-    stopButton.style.border = 'none';
-    stopButton.style.borderRadius = '4px';
-    stopButton.style.marginRight = '10px';
-    stopButton.onclick = () => {
-      console.log('Manual stop button clicked');
-      if (isRecording && mediaRecorderRef.current) {
-        stopRecording();
-      } else {
-        console.log('Not recording - nothing to stop');
-      }
-    };
-
-    // Add a test button to manually simulate impact
-    const impactButton = document.createElement('button');
-    impactButton.innerText = 'Simulate Impact';
-    impactButton.style.backgroundColor = 'blue';
-    impactButton.style.color = 'white';
-    impactButton.style.padding = '8px';
-    impactButton.style.border = 'none';
-    impactButton.style.borderRadius = '4px';
-    impactButton.onclick = () => {
-      console.log('Simulating impact');
-      if (isRecording) {
-        const impactTime = (Date.now() - startTimeRef.current) / 1000;
-        setImpactTimeLabel(formatDuration(impactTime));
-
-        toast({
-          title: 'Impact Simulated!',
-          description: 'Recording will stop in 1.5 seconds',
-          variant: 'default',
-        });
-
-        if (autoStopTimeoutRef.current) {
-          clearTimeout(autoStopTimeoutRef.current);
-        }
-
-        autoStopTimeoutRef.current = setTimeout(() => {
-          if (isRecording && mediaRecorderRef.current) {
-            stopRecording();
-          }
-        }, 1500);
-      } else {
-        console.log('Not recording - cannot simulate impact');
-      }
-    };
-
-    testDiv.appendChild(stopButton);
-    testDiv.appendChild(impactButton);
-    document.body.appendChild(testDiv);
-
-    console.log('Test buttons added');
-
-    // Return cleanup function
-    return () => {
-      try {
-        document.body.removeChild(testDiv);
-      } catch (err) {
-        // Ignore cleanup errors
-      }
-    };
-  };
-
-  const testStopRecording = (): void => {
-    if (isRecording && mediaRecorderRef.current) {
-      console.log('Manually stopping recording (test function)');
-      stopRecording();
-    } else {
-      console.log('Not recording - nothing to stop');
     }
   };
 
@@ -369,6 +245,7 @@ export default function VideoCapturePage() {
     console.log(
       `Video duration: ${sourceVideo.duration}s, dimensions: ${sourceVideo.videoWidth}x${sourceVideo.videoHeight}`
     );
+    console.log(`Will trim ${endTime - startTime}s of footage`);
 
     // Set up canvas for frame extraction
     const canvas = document.createElement('canvas');
@@ -381,32 +258,10 @@ export default function VideoCapturePage() {
     }
 
     // Create a stream from the canvas
-    // @ts-ignore
+    // @ts-ignore - TypeScript doesn't have captureStream() yet
     const canvasStream = canvas.captureStream(30); // 30 FPS
 
-    // Try to get audio track
-    let audioTrack: MediaStreamTrack | null = null;
-
-    try {
-      // Create a new MediaStream from the original video's MediaSource
-      // @ts-ignore
-      const originalStream = sourceVideo.captureStream();
-      const audioTracks = originalStream.getAudioTracks();
-
-      if (audioTracks.length > 0) {
-        audioTrack = audioTracks[0];
-        if (audioTrack) {
-          canvasStream.addTrack(audioTrack);
-          console.log('Successfully added audio track to canvas stream');
-        }
-      } else {
-        console.log('No audio tracks found in original video');
-      }
-    } catch (err) {
-      console.warn('Audio extraction not supported in this browser:', err);
-    }
-
-    // Set up MediaRecorder for the trimmed video
+    // Get the best MIME type
     const mimeType = getSupportedMimeType();
     console.log(`Using MIME type for trimming: ${mimeType}`);
 
@@ -417,6 +272,7 @@ export default function VideoCapturePage() {
 
     const trimmedChunks: Blob[] = [];
     let recordingComplete = false;
+    let frameCount = 0;
 
     // Return a promise that resolves with the trimmed blob
     return new Promise((resolve, reject) => {
@@ -427,25 +283,13 @@ export default function VideoCapturePage() {
       };
 
       mediaRecorder.onstop = () => {
-        if (!recordingComplete) {
-          console.warn('MediaRecorder stopped unexpectedly');
-        }
-
-        console.log('MediaRecorder stopped, creating final video');
+        console.log(`MediaRecorder stopped, processed ${frameCount} frames`);
 
         try {
           const trimmedBlob = new Blob(trimmedChunks, { type: mimeType });
           console.log(`Created trimmed blob: ${trimmedBlob.size} bytes`);
 
-          // Explicitly clean up resources
-          if (audioTrack) {
-            try {
-              audioTrack.stop();
-            } catch (e) {
-              console.warn('Error stopping audio track:', e);
-            }
-          }
-
+          // Clean up resources
           URL.revokeObjectURL(sourceVideo.src);
           sourceVideo.removeAttribute('src');
           sourceVideo.load();
@@ -458,13 +302,9 @@ export default function VideoCapturePage() {
       };
 
       // Start the MediaRecorder
-      mediaRecorder.start(100); // Capture in 100ms chunks for better performance
+      mediaRecorder.start(100); // Capture in 100ms chunks
 
-      // Use requestAnimationFrame for more reliable frame capturing
-      let lastDrawTime = 0;
-      let frameCount = 0;
-
-      // Helper function to manually draw frames at a consistent rate
+      // Function to draw frames at a consistent rate
       const captureFrames = () => {
         // Stop when we reach the end time
         if (sourceVideo.currentTime >= endTime) {
@@ -475,57 +315,48 @@ export default function VideoCapturePage() {
           return;
         }
 
-        // Only draw frames if we're within our target time range
-        if (sourceVideo.currentTime >= startTime) {
-          ctx.drawImage(sourceVideo, 0, 0, canvas.width, canvas.height);
-          frameCount++;
+        // Draw frame to canvas
+        ctx.drawImage(sourceVideo, 0, 0, canvas.width, canvas.height);
+        frameCount++;
 
-          // Log progress occasionally
-          if (frameCount % 30 === 0) {
-            console.log(
-              `Processed ${frameCount} frames, current time: ${sourceVideo.currentTime}s`
-            );
-          }
+        // Log progress occasionally
+        if (frameCount % 30 === 0) {
+          console.log(
+            `Processed ${frameCount} frames, current time: ${sourceVideo.currentTime.toFixed(2)}s`
+          );
         }
 
         // Continue capturing frames
         requestAnimationFrame(captureFrames);
       };
 
+      // Handle errors
       sourceVideo.addEventListener('error', (e) => {
         console.error('Video error during trimming:', e);
         reject(new Error('Video error during playback for trimming'));
       });
 
-      // Start playback to begin capturing
+      // Start the process by seeking to start time
+      console.log('Seeking to start time:', startTime);
+      sourceVideo.currentTime = startTime;
+
+      // Once seeked, start playing and capturing frames
       sourceVideo.addEventListener(
-        'canplay',
+        'seeked',
         () => {
-          console.log('Video can play, seeking to start time:', startTime);
+          console.log('Seeked to start time, starting playback');
 
-          // Seek to the start time
-          sourceVideo.currentTime = startTime;
-
-          // Once seeked, start playing and capturing frames
-          sourceVideo.addEventListener(
-            'seeked',
-            () => {
-              console.log('Seeked to start time, starting playback');
-
-              // Start capturing frames
-              sourceVideo
-                .play()
-                .then(() => {
-                  console.log('Playback started for frame capture');
-                  requestAnimationFrame(captureFrames);
-                })
-                .catch((err) => {
-                  console.error('Error playing video for frame capture:', err);
-                  reject(new Error('Failed to play video for frame capture'));
-                });
-            },
-            { once: true }
-          );
+          // Start capturing frames
+          sourceVideo
+            .play()
+            .then(() => {
+              console.log('Playback started for frame capture');
+              requestAnimationFrame(captureFrames);
+            })
+            .catch((err) => {
+              console.error('Error playing video for frame capture:', err);
+              reject(new Error('Failed to play video for frame capture'));
+            });
         },
         { once: true }
       );
@@ -566,6 +397,12 @@ export default function VideoCapturePage() {
       // This should replace the code in your mediaRecorder.onstop handler
       // inside the startRecording function
 
+      // In the VideoCapturePage.tsx file, update the mediaRecorder.onstop handler
+      // This section is where the error is occurring
+
+      // Replace your mediaRecorder.onstop handler with this version
+      // This approach gets the actual duration from the video file itself
+
       mediaRecorder.onstop = async () => {
         if (recordingTimerRef.current) {
           clearInterval(recordingTimerRef.current);
@@ -584,10 +421,29 @@ export default function VideoCapturePage() {
         );
 
         try {
-          const storedImpactTime = impactTimeLabel || window.lastImpactTime;
+          // Get the actual video duration by loading it into a video element
+          const actualDuration = await getVideoDuration(fullVideoBlob);
+          console.log(`Actual video duration from file: ${actualDuration}s`);
           console.log(
-            `Checking for impact time: Global=${globalImpactTime}, State=${impactTimeLabel}`
+            `Tracked duration: ref=${currentDurationRef.current}s, state=${recordingDuration}s`
           );
+
+          // Use the maximum of tracked duration or actual duration to ensure we have something valid
+          const finalDuration = Math.max(
+            currentDurationRef.current,
+            actualDuration
+          );
+          console.log(`Using final duration: ${finalDuration}s`);
+
+          // Get the impact time from state or window global
+          const storedImpactTime =
+            impactTimeLabel ||
+            window.lastImpactTime ||
+            lastImpactTimeRef.current;
+          console.log(
+            `Checking for impact time: Global=${globalImpactTime}, State=${impactTimeLabel}, Ref=${lastImpactTimeRef.current}`
+          );
+
           // If we have an impact time, trim the video around that time
           if (storedImpactTime) {
             console.log(`Using impact time: ${storedImpactTime}`);
@@ -597,22 +453,73 @@ export default function VideoCapturePage() {
             const seconds = parseFloat(impactTimeParts[1]);
             const impactTimeInSeconds = minutes * 60 + seconds;
 
-            // Calculate trim points: keep up to 4 seconds before and 1.5 seconds after impact
-            const startTime = Math.max(0, impactTimeInSeconds - 4);
-            const endTime = Math.min(
-              impactTimeInSeconds + 1.5,
-              recordingDuration // Make sure we don't exceed the total duration
+            console.log(
+              `Impact time in seconds: ${impactTimeInSeconds}, Total recording duration: ${finalDuration}s`
             );
 
+            // If video is very short or impact time is invalid, just show the full video
+            if (finalDuration < 1 || impactTimeInSeconds < 0) {
+              console.log(
+                'Video too short or invalid impact time, using full video'
+              );
+              setRecordedVideoBlob(fullVideoBlob);
+              setTrimmedVideoBlob(null);
+              setIsProcessing(false);
+              prepareVideoForPlayback(fullVideoBlob);
+
+              toast({
+                title: 'Video Processing',
+                description:
+                  'Video is too short to trim, showing full recording',
+                variant: 'default',
+              });
+              return;
+            }
+
+            // If impact time is greater than duration, cap it
+            let effectiveImpactTime = impactTimeInSeconds;
+            if (impactTimeInSeconds > finalDuration) {
+              console.warn(
+                `Impact time ${impactTimeInSeconds}s exceeds video duration ${finalDuration}s`
+              );
+              // Place impact at 75% of the video
+              effectiveImpactTime = finalDuration * 0.75;
+              console.log(`Adjusted impact time to ${effectiveImpactTime}s`);
+            }
+
+            // Calculate trim range with guardrails
+            let startTime = Math.max(0, effectiveImpactTime - 5);
+            let endTime = Math.min(effectiveImpactTime + 1.5, finalDuration);
+
+            // Ensure we have a valid range (at least 0.5 seconds)
+            if (startTime >= endTime || endTime - startTime < 0.5) {
+              if (finalDuration < 0.5) {
+                // Video too short, use full video
+                console.log(
+                  'Video too short for meaningful trim, using full video'
+                );
+                setRecordedVideoBlob(fullVideoBlob);
+                setTrimmedVideoBlob(null);
+                setIsProcessing(false);
+                prepareVideoForPlayback(fullVideoBlob);
+                return;
+              }
+
+              // Adjust for a valid range
+              console.log('Adjusting for valid trim range');
+              startTime = 0;
+              endTime = Math.min(finalDuration, 1.5); // Use up to 1.5 seconds or full duration
+            }
+
             console.log(
-              `Trimming video from ${startTime}s to ${endTime}s (impact at ${impactTimeInSeconds}s)`
+              `Trimming video from ${startTime}s to ${endTime}s (impact at ${effectiveImpactTime}s)`
             );
 
             try {
-              // Store full video before trimming
+              // Store full video first
               setRecordedVideoBlob(fullVideoBlob);
 
-              // Trim the video
+              // Attempt trimming
               const trimmedBlob = await trimVideoByTimeRange(
                 fullVideoBlob,
                 startTime,
@@ -625,35 +532,22 @@ export default function VideoCapturePage() {
                 'bytes'
               );
 
-              // Set the trimmed blob (will be used for playback)
+              // Set trimmed blob and update UI
               setTrimmedVideoBlob(trimmedBlob);
+              setIsProcessing(false);
+              prepareVideoForPlayback(trimmedBlob);
 
-              // Ensure we're storing the impact time in state
-              if (!impactTimeLabel) {
-                setImpactTimeLabel(storedImpactTime);
-              }
-
-              // Schedule the video preparation for after state updates
-              setTimeout(() => {
-                setIsProcessing(false);
-
-                // Use our new function for reliable playback
-                prepareVideoForPlayback(trimmedBlob);
-
-                toast({
-                  title: 'Video Processed',
-                  description: `Auto-trimmed around impact at ${storedImpactTime}`,
-                  variant: 'default',
-                });
-              }, 100);
+              toast({
+                title: 'Video Processed',
+                description: `Auto-trimmed around ${storedImpactTime === impactTimeLabel ? 'detected impact' : 'approximate impact point'}`,
+                variant: 'default',
+              });
             } catch (error) {
               console.error('Error trimming video:', error);
-              // If trimming fails, just use the full video
+              // Fallback to full video
               setRecordedVideoBlob(fullVideoBlob);
-              setTrimmedVideoBlob(null); // Explicitly clear trimmed video
+              setTrimmedVideoBlob(null);
               setIsProcessing(false);
-
-              // Prepare the full video for playback
               prepareVideoForPlayback(fullVideoBlob);
 
               toast({
@@ -663,24 +557,19 @@ export default function VideoCapturePage() {
               });
             }
           } else {
-            // No impact detected, just use the full video
+            // No impact detected, use full video
             console.log('No impact detected, using full video');
             setRecordedVideoBlob(fullVideoBlob);
-            setTrimmedVideoBlob(null); // Explicitly clear trimmed video
+            setTrimmedVideoBlob(null);
             setIsProcessing(false);
-
-            // Prepare the full video for playback
             prepareVideoForPlayback(fullVideoBlob);
           }
         } catch (error) {
           console.error('Error processing video:', error);
-
-          // Fallback to showing the full video
+          // Fallback to full video
           setRecordedVideoBlob(fullVideoBlob);
-          setTrimmedVideoBlob(null); // Explicitly clear trimmed video
+          setTrimmedVideoBlob(null);
           setIsProcessing(false);
-
-          // Prepare the full video for playback
           prepareVideoForPlayback(fullVideoBlob);
 
           toast({
@@ -889,17 +778,21 @@ export default function VideoCapturePage() {
             const impactTime = (Date.now() - startTimeRef.current) / 1000;
             const formattedTime = formatDuration(impactTime);
             console.log(
-              `Setting impact time to ${impactTime}s (formatted: ${formatDuration(impactTime)})`
+              `Setting impact time to ${impactTime}s (formatted: ${formattedTime})`
+            );
+            console.log(
+              `Current recording duration: ${currentDurationRef.current}s (state: ${recordingDuration}s)`
             );
             setImpactTimeLabel(formattedTime);
             globalImpactTime = formattedTime;
 
+            // Store in window for cross-component access
+            window.lastImpactTime = formattedTime;
+            lastImpactTimeRef.current = formattedTime;
+
             console.log(
               `*** IMPACT DETECTED *** Time: ${formattedTime}, storing globally`
             );
-
-            // Also store in a ref for immediate access (React state updates are asynchronous)
-            lastImpactTimeRef.current = formatDuration(impactTime);
 
             // Visual feedback
             levelIndicator.style.backgroundColor = 'red';
@@ -961,27 +854,6 @@ export default function VideoCapturePage() {
     }
   };
 
-  const getVideoUrl = () => {
-    // If we have a trimmed video, use that
-    if (trimmedVideoBlob) {
-      console.log(
-        'Using trimmed video for playback, size:',
-        trimmedVideoBlob.size
-      );
-      return URL.createObjectURL(trimmedVideoBlob);
-    }
-
-    // Otherwise use the full video
-    if (recordedVideoBlob) {
-      console.log(
-        'Using full video for playback, size:',
-        recordedVideoBlob.size
-      );
-      return URL.createObjectURL(recordedVideoBlob);
-    }
-
-    return '';
-  };
   // Add function to stop impact detection
   const stopImpactDetection = () => {
     setIsListeningForImpact(false);
@@ -1071,47 +943,62 @@ export default function VideoCapturePage() {
     return `${mins}:${secs.toString().padStart(2, '0')}.${ms}`;
   };
 
+  // Updated prepareVideoForPlayback function that handles missing references
   const prepareVideoForPlayback = (blob: Blob) => {
-    if (!previewVideoRef.current) return;
-
-    // Create a new object URL to avoid potential caching issues
-    const url = URL.createObjectURL(blob);
-
-    // Clear any existing blob URLs first
-    if (
-      previewVideoRef.current.src &&
-      previewVideoRef.current.src.startsWith('blob:')
-    ) {
-      URL.revokeObjectURL(previewVideoRef.current.src);
+    if (!blob) {
+      console.error('No video blob provided for playback');
+      return;
     }
 
-    // Set the source to the new blob URL
-    previewVideoRef.current.src = url;
+    console.log(
+      `Preparing video for playback, blob size: ${blob.size} bytes, type: ${blob.type}`
+    );
 
-    // Wait for the video to load metadata before trying to play
-    previewVideoRef.current.onloadedmetadata = () => {
+    // Skip direct video element manipulation if we're using the VideoPlayer component
+    // The VideoPlayer component will handle the blob directly
+    if (!previewVideoRef.current) {
       console.log(
-        `Video metadata loaded. Duration: ${previewVideoRef.current?.duration}s`
+        'No direct preview video ref available, relying on VideoPlayer component'
       );
+      return;
+    }
+
+    // If previewVideoRef exists, we'll update it directly
+    const videoElement = previewVideoRef.current;
+
+    // Clean up any existing blob URLs
+    if (videoElement.src && videoElement.src.startsWith('blob:')) {
+      URL.revokeObjectURL(videoElement.src);
+    }
+
+    // Create a new blob URL
+    const url = URL.createObjectURL(blob);
+    console.log('Created new blob URL for playback:', url);
+
+    // Set the video source
+    videoElement.src = url;
+
+    // Set up event handlers
+    videoElement.onloadedmetadata = () => {
+      console.log(`Video metadata loaded. Duration: ${videoElement.duration}s`);
       // Reset the playback position to the start
-      if (previewVideoRef.current) {
-        previewVideoRef.current.currentTime = 0;
-      }
+      videoElement.currentTime = 0;
     };
 
-    // Wait for the video to be ready to play
-    previewVideoRef.current.oncanplay = () => {
+    videoElement.oncanplay = () => {
       console.log('Video can play, starting playback');
-      if (previewVideoRef.current) {
-        previewVideoRef.current
-          .play()
-          .then(() => console.log('Playback started successfully'))
-          .catch((err) => console.error('Error starting playback:', err));
-      }
+      videoElement
+        .play()
+        .then(() => console.log('Playback started successfully'))
+        .catch((err) => console.error('Error starting playback:', err));
+    };
+
+    videoElement.onerror = (event) => {
+      console.error('Error loading video:', event);
     };
 
     // Force a reload to apply the new source
-    previewVideoRef.current.load();
+    videoElement.load();
   };
 
   return (
