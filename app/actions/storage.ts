@@ -1,7 +1,7 @@
-// File: app/actions/storage.ts
 'use server';
 
 import { Storage } from '@google-cloud/storage';
+import { revalidatePath } from 'next/cache';
 
 export interface SignedUrlRequest {
   filename: string;
@@ -12,6 +12,19 @@ export interface SignedUrlRequest {
 export interface SignedUrlResponse {
   url: string;
   publicUrl: string;
+}
+
+export interface ProcessedVideoStatusRequest {
+  bucketName?: string;
+  fileName: string;
+  processedFolder?: string;
+}
+
+export interface ProcessedVideoStatusResponse {
+  exists: boolean;
+  publicUrl?: string;
+  fileName?: string;
+  error?: string;
 }
 
 /**
@@ -80,6 +93,93 @@ export async function generateSignedUrl({
   } catch (error) {
     console.error('Error generating signed URL:', error);
     throw new Error(`Failed to generate signed URL: ${(error as Error).message}`);
+  }
+}
+
+/**
+ * Checks if a processed video is available in the specified bucket
+ */
+export async function checkProcessedVideoStatus({
+  bucketName,
+  fileName,
+  processedFolder = 'processed_video/user',
+}: ProcessedVideoStatusRequest): Promise<ProcessedVideoStatusResponse> {
+  if (!fileName) {
+    return { exists: false, error: 'File name is required' };
+  }
+  
+  // Get bucket name from params or environment variables
+  const storageBucket = bucketName || process.env.STORAGE_BUCKET_NAME || process.env.POSE_ESTIMATION_ANALYSIS_BUCKET;
+  if (!storageBucket) {
+    return { exists: false, error: 'Storage bucket name not configured' };
+  }
+  
+  try {
+    // Get service account credentials from environment variable
+    const serviceKeyEnv = process.env.GOOGLE_CLOUD_SERVICE_KEY;
+    if (!serviceKeyEnv) {
+      return { exists: false, error: 'Google Cloud service account key not configured' };
+    }
+
+    // Parse the service account credentials
+    let credentials;
+    try {
+      credentials = JSON.parse(serviceKeyEnv);
+    } catch (e) {
+      return { exists: false, error: 'Invalid Google Cloud service account key format' };
+    }
+
+    const fileNameOnly = fileName.includes('/') ? fileName.split('/').pop() : fileName;
+    if (!fileNameOnly) {
+      return { exists: false, error: 'Invalid file name' };
+    }
+    
+    // Create the processed file path
+    const processedFileName = `${processedFolder}/${fileName}`;
+    
+    // Log inputs for debugging
+    console.log("Checking processed video status for:", {
+      bucket: storageBucket,
+      file: processedFileName
+    });
+    
+    // Initialize Google Cloud Storage with credentials
+    const storage = new Storage({
+      credentials,
+      projectId: credentials.project_id
+    });
+    
+    // Check if the processed file exists
+    const bucket = storage.bucket(storageBucket);
+    const file = bucket.file(processedFileName);
+    const [exists] = await file.exists();
+    
+    if (!exists) {
+      // File doesn't exist yet
+      return { exists: false };
+    }
+    
+    // Generate a temporary public URL for the file
+    const [url] = await file.getSignedUrl({
+      version: 'v4',
+      action: 'read',
+      expires: Date.now() + 60 * 60 * 1000, // 1 hour
+    });
+    
+    // Revalidate the analysis page to ensure fresh data
+    revalidatePath('/analysis-results');
+    
+    return {
+      exists: true,
+      publicUrl: url,
+      fileName: processedFileName,
+    };
+  } catch (error) {
+    console.error('Error checking processed video:', error);
+    return { 
+      exists: false, 
+      error: `Failed to check processed video status: ${(error as Error).message}` 
+    };
   }
 }
 

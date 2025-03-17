@@ -6,13 +6,6 @@ import {
   formatDuration,
   getVideoDuration,
 } from '@/lib/videoUtils';
-
-declare global {
-  interface Window {
-    lastImpactTime?: string;
-  }
-}
-
 import { useState, useRef, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import {
@@ -23,9 +16,19 @@ import {
   Scissors,
 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
-import { VideoUploadButton } from '@/components/ui/upload-button';
+import {
+  VideoUploadButton,
+  ProcessVideoResponse,
+} from '@/components/ui/upload-button';
 import Image from 'next/image';
 import golfSwingImage from '../public/face-on-golf-swing-soloute.png';
+import { useRouter } from 'next/navigation';
+
+declare global {
+  interface Window {
+    lastImpactTime?: string;
+  }
+}
 
 export default function VideoCapturePage() {
   const [cameraFacing, setCameraFacing] = useState<'user' | 'environment'>(
@@ -58,6 +61,37 @@ export default function VideoCapturePage() {
   const currentDurationRef = useRef<number>(0);
 
   const { toast } = useToast();
+  const router = useRouter();
+
+  const handleProcessingComplete = (result: ProcessVideoResponse) => {
+    if (result.success) {
+      // Extract the filename from the full path - adjust this based on your naming convention
+      const fileName = result.fileName.split('/').pop();
+
+      if (!fileName) {
+        console.error('Could not extract filename from path:', result.fileName);
+        toast({
+          title: 'Error',
+          description: 'Could not process video path',
+          variant: 'destructive',
+        });
+        return;
+      }
+
+      // Show a toast notification
+      toast({
+        title: 'Video Uploaded',
+        description:
+          'Your swing is being analyzed. You will be redirected shortly...',
+        variant: 'default',
+      });
+
+      // Navigate to analysis page
+      router.push(
+        `/analysis-results?fileName=${fileName}&bucketName=${result.bucketName}`
+      );
+    }
+  };
 
   useEffect(() => {
     startCamera();
@@ -867,7 +901,7 @@ export default function VideoCapturePage() {
           <div className="absolute inset-0 flex items-center justify-center bg-black/80">
             <div className="text-center">
               <div className="w-16 h-16 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
-              <h2 className="text-xl font-semibold mb-2">Analysing Swing</h2>
+              <h2 className="text-xl font-semibold mb-2">Processing Video</h2>
               <p className="text-gray-400">
                 Detecting ball impact and optimsing video...
               </p>
@@ -957,6 +991,13 @@ export default function VideoCapturePage() {
                   <VideoUploadButton
                     videoBlob={trimmedVideoBlob || recordedVideoBlob}
                     cameraFacing={cameraFacing}
+                    onProcessingComplete={handleProcessingComplete}
+                    useDirectUpload={true}
+                    uploadOptions={{
+                      destinationPath: 'unprocessed_video/user',
+                      quality: 'high',
+                    }}
+                    className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-md"
                   />
                   <Button
                     className="px-4 py-2 bg-blue-500 text-white rounded-md disabled:opacity-50 gap-1 text-md"

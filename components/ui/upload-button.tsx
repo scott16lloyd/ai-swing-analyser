@@ -2,6 +2,7 @@
 
 import { useState, useRef } from 'react';
 import { useToast } from '@/hooks/use-toast';
+import { upload } from '@google-cloud/storage/build/cjs/src/resumable-upload';
 
 interface ProcessVideoOptions {
   cameraFacing?: 'user' | 'environment' | string;
@@ -11,7 +12,7 @@ interface ProcessVideoOptions {
   onProgress?: (progress: number) => void;
 }
 
-interface ProcessVideoResponse {
+export interface ProcessVideoResponse {
   success: boolean;
   bucketName: string;
   fileName: string;
@@ -35,7 +36,7 @@ export async function uploadVideoDirectly(
     cameraFacing = 'unknown',
     quality = 'high',
     bucketName = process.env.STORAGE_BUCKET_NAME || '',
-    destinationPath = 'unprocessed_video/test',
+    destinationPath = 'unprocessed_video/user',
     onProgress = () => {},
   } = options;
 
@@ -122,6 +123,7 @@ interface VideoUploadButtonProps {
   className?: string;
   disabled?: boolean;
   useDirectUpload?: boolean;
+  uploadOptions?: Partial<ProcessVideoOptions>;
 }
 
 // Simplified component for testing
@@ -133,6 +135,7 @@ export function VideoUploadButton({
   className = '',
   disabled = false,
   useDirectUpload = true,
+  uploadOptions = {},
 }: VideoUploadButtonProps) {
   const [uploading, setUploading] = useState<boolean>(false);
   const [progress, setProgress] = useState<number>(0);
@@ -165,6 +168,7 @@ export function VideoUploadButton({
         cameraFacing,
         quality: 'high',
         onProgress: updateProgress,
+        ...uploadOptions,
       });
 
       toast({
