@@ -1027,7 +1027,7 @@ export default function VideoCapturePage() {
           <div className="absolute inset-0 flex items-center justify-center bg-black/80">
             <div className="text-center">
               <div className="w-16 h-16 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
-              <h2 className="text-xl font-semibold mb-2">Analyzing Swing</h2>
+              <h2 className="text-xl font-semibold mb-2">Analysing Swing</h2>
               <p className="text-gray-400">
                 Detecting ball impact and optimizing video...
               </p>
@@ -1097,16 +1097,18 @@ export default function VideoCapturePage() {
       <div className="relative p-4 mb-16 flex justify-center items-center gap-4">
         {!isProcessing && (
           <>
-            <Button
-              className="rounded-full p-3 bg-transparent border-2 border-white hover:bg-white/20 transition-colors"
-              onClick={toggleCamera}
-              disabled={
-                isRecording || countdownTime !== null || !!recordedVideoBlob
-              }
-              title="Switch Camera"
-            >
-              <CameraIcon className="h-6 w-6" />
-            </Button>
+            {countdownTime == 0 ? (
+              <Button
+                className="rounded-full p-3 bg-transparent border-2 border-white hover:bg-white/20 transition-colors"
+                onClick={toggleCamera}
+                disabled={
+                  isRecording || countdownTime !== null || !!recordedVideoBlob
+                }
+                title="Switch Camera"
+              >
+                <CameraIcon className="h-6 w-6" />
+              </Button>
+            ) : null}
 
             {countdownTime === null && !isRecording ? (
               recordedVideoBlob ? (
@@ -1116,20 +1118,12 @@ export default function VideoCapturePage() {
                     videoBlob={trimmedVideoBlob || recordedVideoBlob}
                     cameraFacing={cameraFacing}
                   />
-
                   <Button
-                    className="rounded-full p-3 bg-transparent border-2 border-white hover:bg-white/20 transition-colors"
-                    onClick={downloadVideo}
-                    title="Download Video"
-                  >
-                    <Download className="h-6 w-6" />
-                  </Button>
-
-                  <Button
-                    className="rounded-full p-3 bg-blue-600 hover:bg-blue-700 transition-colors"
+                    className="px-4 py-2 bg-blue-500 text-white rounded-md disabled:opacity-50 gap-1 text-md"
                     onClick={startCountdown}
                     title="Record New Video"
                   >
+                    Retake
                     <CameraIcon className="h-6 w-6" />
                   </Button>
                 </>

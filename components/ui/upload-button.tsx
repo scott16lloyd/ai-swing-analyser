@@ -35,7 +35,7 @@ export async function uploadVideoDirectly(
     cameraFacing = 'unknown',
     quality = 'high',
     bucketName = process.env.STORAGE_BUCKET_NAME || '',
-    destinationPath = 'unprocessed_video/test', // Simplified path
+    destinationPath = 'unprocessed_video/test',
     onProgress = () => {},
   } = options;
 
