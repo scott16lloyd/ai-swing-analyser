@@ -1097,7 +1097,7 @@ export default function VideoCapturePage() {
       <div className="relative p-4 mb-16 flex justify-center items-center gap-4">
         {!isProcessing && (
           <>
-            {countdownTime == 0 ? (
+            {!recordedVideoBlob ? (
               <Button
                 className="rounded-full p-3 bg-transparent border-2 border-white hover:bg-white/20 transition-colors"
                 onClick={toggleCamera}
