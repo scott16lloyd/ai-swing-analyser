@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { Suspense, useState, useEffect } from 'react';
 import { useSearchParams } from 'next/navigation';
 import VideoPlayer from '@/components/ui/videoPlayer';
 import Image from 'next/image';
@@ -11,7 +11,7 @@ import { useRouter } from 'next/navigation';
 import { useToast } from '@/hooks/use-toast';
 import { checkProcessedVideoStatus } from '@/app/actions/storage';
 
-export default function SwingAnalysisPage() {
+function SwingAnalysisContent() {
   const searchParams = useSearchParams();
   const fileName = searchParams.get('fileName');
   const bucketName = searchParams.get('bucketName');
@@ -22,6 +22,7 @@ export default function SwingAnalysisPage() {
   const router = useRouter();
   const { toast } = useToast();
 
+  // Rest of the component remains the same as in the original code
   useEffect(() => {
     if (!fileName) {
       setError('No file name provided');
@@ -205,5 +206,13 @@ export default function SwingAnalysisPage() {
         </div>
       )}
     </div>
+  );
+}
+
+export default function SwingAnalysisPage() {
+  return (
+    <Suspense fallback={<div>Loading...</div>}>
+      <SwingAnalysisContent />
+    </Suspense>
   );
 }
