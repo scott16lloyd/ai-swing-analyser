@@ -277,6 +277,8 @@ export default function VideoCapturePage() {
       // Replace your mediaRecorder.onstop handler with this version
       // This approach gets the actual duration from the video file itself
 
+      // This is the updated mediaRecorder.onstop handler from the VideoCapturePage.tsx file
+
       mediaRecorder.onstop = async () => {
         if (recordingTimerRef.current) {
           clearInterval(recordingTimerRef.current);
@@ -362,8 +364,9 @@ export default function VideoCapturePage() {
             }
 
             // Calculate trim range with guardrails
-            let startTime = Math.max(0, effectiveImpactTime - 5);
-            let endTime = Math.min(effectiveImpactTime + 1.5, finalDuration);
+            // UPDATED: Adjusted timing to ensure we capture more before and after impact
+            let startTime = Math.max(0, effectiveImpactTime - 4); // Changed from 5 to 4 seconds before impact
+            let endTime = Math.min(effectiveImpactTime + 2, finalDuration); // Changed from 1.5 to 2 seconds after impact
 
             // Ensure we have a valid range (at least 0.5 seconds)
             if (startTime >= endTime || endTime - startTime < 0.5) {
@@ -382,7 +385,7 @@ export default function VideoCapturePage() {
               // Adjust for a valid range
               console.log('Adjusting for valid trim range');
               startTime = 0;
-              endTime = Math.min(finalDuration, 1.5); // Use up to 1.5 seconds or full duration
+              endTime = Math.min(finalDuration, 2); // Changed from 1.5 to 2 seconds
             }
 
             console.log(
@@ -487,6 +490,8 @@ export default function VideoCapturePage() {
     }
   };
 
+  // This is the updated startImpactDetectionDirect function from VideoCapturePage.tsx
+
   const startImpactDetectionDirect = (): void => {
     console.log('Starting direct impact detection');
 
@@ -568,6 +573,10 @@ export default function VideoCapturePage() {
       let isPeaking = false;
       let peakTime = 0;
 
+      // Track volume over time for better detection
+      const volumeHistory: number[] = [];
+      const HISTORY_SIZE = 10; // Keep track of last 10 volume readings
+
       // Use console for debugging
       console.log('🎤 Sound detection started - watch for console logs');
 
@@ -599,6 +608,12 @@ export default function VideoCapturePage() {
         }
         const volumeLevel = Math.sqrt(sum / input.length);
 
+        // Add to history
+        volumeHistory.push(volumeLevel);
+        if (volumeHistory.length > HISTORY_SIZE) {
+          volumeHistory.shift(); // Remove oldest value
+        }
+
         // First 30 frames are for calibration
         if (calibrationFrames < 30) {
           baselineVolume =
@@ -609,7 +624,7 @@ export default function VideoCapturePage() {
           // After calibration, set threshold higher than baseline
           if (calibrationFrames === 30) {
             // Set threshold based on baseline volume
-            threshold = Math.max(0.05, baselineVolume * 8); // Higher multiplier for better detection
+            threshold = Math.max(0.05, baselineVolume * 6); // Reduced multiplier for better detection
             console.log(
               `Calibration complete - Baseline: ${baselineVolume.toFixed(4)}, Threshold: ${threshold.toFixed(4)}`
             );
@@ -617,8 +632,8 @@ export default function VideoCapturePage() {
 
             // Also show a toast notification so the user knows calibration is done
             toast({
-              title: 'Clap Detection Ready',
-              description: 'You can now clap to stop recording',
+              title: 'Sound Detection Ready',
+              description: 'Golf impact sound detection is active',
               variant: 'default',
             });
           }
@@ -640,10 +655,19 @@ export default function VideoCapturePage() {
             maxVolume = volumeLevel;
           }
 
-          // Detect impact - if volume exceeds threshold
-          if (volumeLevel > threshold && !isPeaking) {
+          // Calculate average of recent volumes
+          const avgVolume =
+            volumeHistory.reduce((a, b) => a + b, 0) / volumeHistory.length;
+
+          // Improved detection with spike detection
+          // Volume must be significantly above both threshold and recent average
+          const isSignificantSpike =
+            volumeLevel > threshold && volumeLevel > avgVolume * 2;
+
+          // Detect impact - if volume exceeds threshold and is a significant spike
+          if (isSignificantSpike && !isPeaking) {
             console.log(
-              `🔊 LOUD SOUND DETECTED! Level: ${volumeLevel.toFixed(4)}`
+              `🔊 IMPACT SOUND DETECTED! Level: ${volumeLevel.toFixed(4)}, Avg: ${avgVolume.toFixed(4)}`
             );
             isPeaking = true;
             peakTime = Date.now();
@@ -657,12 +681,15 @@ export default function VideoCapturePage() {
             console.log(
               `Current recording duration: ${currentDurationRef.current}s (state: ${recordingDuration}s)`
             );
+
+            // Store impact time in multiple places for redundancy
             setImpactTimeLabel(formattedTime);
             globalImpactTime = formattedTime;
-
-            // Store in window for cross-component access
             window.lastImpactTime = formattedTime;
             lastImpactTimeRef.current = formattedTime;
+
+            // Update current duration reference to ensure we have accurate timing
+            currentDurationRef.current = impactTime;
 
             console.log(
               `*** IMPACT DETECTED *** Time: ${formattedTime}, storing globally`
@@ -676,16 +703,17 @@ export default function VideoCapturePage() {
 
             // Show toast notification
             toast({
-              title: 'Sound Detected!',
-              description: `Impact recorded at ${formattedTime}. Recording will stop in 1.5 seconds`,
+              title: 'Impact Detected!',
+              description: `Sound detected at ${formattedTime}. Recording will continue for a moment...`,
               variant: 'default',
             });
 
-            // Schedule auto-stop after 1.5 seconds
+            // Schedule auto-stop after a longer delay to ensure we capture the full swing follow-through
             if (autoStopTimeoutRef.current) {
               clearTimeout(autoStopTimeoutRef.current);
             }
 
+            // INCREASED from 1.5 to 2.5 seconds to ensure we capture more after the impact
             autoStopTimeoutRef.current = setTimeout(() => {
               console.log(
                 `Auto-stop triggered. Impact time was: ${globalImpactTime}`
@@ -705,7 +733,7 @@ export default function VideoCapturePage() {
               } catch (err) {
                 // Ignore cleanup errors
               }
-            }, 1500);
+            }, 2500); // Increased delay after impact detection
 
             return;
           }
