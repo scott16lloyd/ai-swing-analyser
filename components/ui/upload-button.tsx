@@ -98,7 +98,7 @@ export async function uploadVideoDirectly(
     // Return a success response
     return {
       success: true,
-      bucketName: bucketName || 'default-bucket',
+      bucketName: bucketName,
       fileName: fullPath,
       publicUrl,
       metadata: {
