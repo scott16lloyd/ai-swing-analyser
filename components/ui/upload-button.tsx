@@ -2,7 +2,6 @@
 
 import { useState, useRef } from 'react';
 import { useToast } from '@/hooks/use-toast';
-import { upload } from '@google-cloud/storage/build/cjs/src/resumable-upload';
 
 interface ProcessVideoOptions {
   cameraFacing?: 'user' | 'environment' | string;

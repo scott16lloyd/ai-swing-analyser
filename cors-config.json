@@ -6,7 +6,13 @@
       "https://*.vercel.app"
     ],
     "method": ["GET", "HEAD", "PUT", "POST", "DELETE"],
-    "responseHeader": ["Content-Type", "Content-MD5", "x-goog-*"],
+    "responseHeader": [
+      "Content-Type",
+      "Content-MD5",
+      "x-goog-*",
+      "Content-Disposition",
+      "Cache-Control"
+    ],
     "maxAgeSeconds": 3600
   }
 ]

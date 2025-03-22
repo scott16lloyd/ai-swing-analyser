@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useState, useEffect } from 'react';
+import { Suspense, useState, useEffect, useRef } from 'react';
 import { useSearchParams } from 'next/navigation';
 import VideoPlayer from '@/components/ui/videoPlayer';
 import Image from 'next/image';
@@ -18,100 +18,172 @@ function SwingAnalysisContent() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [videoBlob, setVideoBlob] = useState<Blob | null>(null);
-  const [pollingCount, setPollingCount] = useState(0);
+  const [pollingAttempt, setPollingAttempt] = useState(0);
   const router = useRouter();
   const { toast } = useToast();
+  const lastPollTime = useRef<number>(Date.now());
+  const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Rest of the component remains the same as in the original code
+  // Maximum polling attempts (2 minutes ÷ 5 seconds = 24 attempts)
+  const MAX_POLLING_ATTEMPTS = 24;
+
+  // Polling interval in milliseconds (5 seconds)
+  const POLLING_INTERVAL = 5000;
+
+  // Reset everything when the component unmounts
   useEffect(() => {
-    if (!fileName) {
-      setError('No file name provided');
-      setIsLoading(false);
+    return () => {
+      if (pollingIntervalRef.current) {
+        clearInterval(pollingIntervalRef.current);
+      }
+    };
+  }, []);
+
+  // Reset when filename changes
+  useEffect(() => {
+    setPollingAttempt(0);
+    setIsLoading(true);
+    setError(null);
+    setVideoBlob(null);
+    lastPollTime.current = Date.now();
+
+    if (pollingIntervalRef.current) {
+      clearInterval(pollingIntervalRef.current);
+      pollingIntervalRef.current = null;
+    }
+  }, [fileName, bucketName]);
+
+  useEffect(() => {
+    if (!fileName || !isLoading) {
+      // Clear any existing interval if we're not loading
+      if (pollingIntervalRef.current) {
+        clearInterval(pollingIntervalRef.current);
+        pollingIntervalRef.current = null;
+      }
       return;
     }
 
-    const checkVideoStatus = async () => {
+    // Define the polling function
+    const checkForProcessedVideo = async () => {
+      // Make sure we're not polling too quickly
+      const now = Date.now();
+      const timeSinceLastPoll = now - lastPollTime.current;
+
+      // Only poll if enough time has passed (at least 90% of the interval)
+      if (timeSinceLastPoll < POLLING_INTERVAL * 0.9) {
+        console.log(
+          `Skipping poll - only ${timeSinceLastPoll}ms since last poll`
+        );
+        return;
+      }
+
+      console.log(
+        `Polling attempt ${pollingAttempt + 1}/${MAX_POLLING_ATTEMPTS} for ${fileName}`
+      );
+      lastPollTime.current = now;
+
       try {
-        // Call the server action to check if the video is processed
-        const result = await checkProcessedVideoStatus({
-          bucketName: bucketName || undefined,
-          fileName,
-          processedFolder: 'processed_video/user', // Update this to match your cloud function's output folder
-        });
+        if (fileName) {
+          // Make sure we're just using the filename without path consistently
+          const fileNameOnly = fileName.includes('/')
+            ? fileName.split('/').pop()
+            : fileName;
 
-        if (!result.exists) {
-          // If there's an error from the server
-          if (result.error) {
-            throw new Error(result.error);
+          if (!fileNameOnly) {
+            setError('Invalid filename');
+            setIsLoading(false);
+            return;
           }
 
-          // If we've been polling for more than 30 seconds (10 attempts * 3 seconds),
-          // give the user an update but keep trying
-          if (pollingCount === 10) {
-            toast({
-              title: 'Still Processing',
-              description:
-                'Your swing is taking a bit longer to analyze than usual. Hang tight!',
-              variant: 'default',
-            });
+          const result = await checkProcessedVideoStatus({
+            bucketName: bucketName || undefined,
+            fileName: fileNameOnly, // IMPORTANT: Use fileNameOnly consistently
+            processedFolder: 'processed_video/user',
+          });
+
+          console.log('Check result:', result);
+
+          if (result.exists && result.publicUrl) {
+            try {
+              const response = await fetch(result.publicUrl);
+              if (response.ok) {
+                const blob = await response.blob();
+                setVideoBlob(blob);
+                setIsLoading(false);
+
+                toast({
+                  title: 'Analysis Complete',
+                  description: 'Your swing has been analyzed successfully!',
+                  variant: 'default',
+                });
+
+                // Clear the interval since we're done
+                if (pollingIntervalRef.current) {
+                  clearInterval(pollingIntervalRef.current);
+                  pollingIntervalRef.current = null;
+                }
+
+                return; // Exit polling if successful
+              } else {
+                console.error('Error fetching video. Status:', response.status);
+              }
+            } catch (fetchError) {
+              console.error('Error fetching video:', fetchError);
+            }
+          }
+        }
+
+        // If we reached maximum attempts, show error
+        if (pollingAttempt >= MAX_POLLING_ATTEMPTS - 1) {
+          setError('Video processing took too long. Please try again later.');
+          setIsLoading(false);
+
+          // Clear the interval since we're done
+          if (pollingIntervalRef.current) {
+            clearInterval(pollingIntervalRef.current);
+            pollingIntervalRef.current = null;
           }
 
-          // If we've been polling for more than 2 minutes (40 attempts * 3 seconds),
-          // stop and show an error
-          if (pollingCount > 40) {
-            throw new Error(
-              'Video processing took too long. Please try again later.'
-            );
-          }
-
-          // Continue polling after 3 seconds
-          setPollingCount((prev) => prev + 1);
-          setTimeout(checkVideoStatus, 3000);
           return;
         }
 
-        // Video is ready, fetch it using the signed URL
-        try {
-          if (!result.publicUrl) {
-            throw new Error('No URL provided for the processed video');
-          }
-
-          const response = await fetch(result.publicUrl);
-          if (!response.ok) {
-            throw new Error(`Failed to fetch video: ${response.status}`);
-          }
-
-          const videoBlob = await response.blob();
-          setVideoBlob(videoBlob);
-          setIsLoading(false);
-
-          // Notify user
-          toast({
-            title: 'Analysis Complete',
-            description: 'Your swing has been analyzed successfully!',
-            variant: 'default',
-          });
-        } catch (fetchError) {
-          console.error('Error fetching video:', fetchError);
-          throw new Error('Could not download the processed video');
-        }
+        // Increment polling attempts and continue polling
+        setPollingAttempt((prev) => prev + 1);
       } catch (err) {
         console.error('Error checking processed video:', err);
         setError(
           err instanceof Error ? err.message : 'Failed to load processed video'
         );
         setIsLoading(false);
+
+        // Clear the interval since we encountered an error
+        if (pollingIntervalRef.current) {
+          clearInterval(pollingIntervalRef.current);
+          pollingIntervalRef.current = null;
+        }
       }
     };
 
-    // Start polling for the processed video
-    checkVideoStatus();
+    // Only set up the interval if it doesn't already exist
+    if (!pollingIntervalRef.current) {
+      // Call once immediately for the first check
+      checkForProcessedVideo();
 
-    // Clean up
-    return () => {
-      // Any cleanup if needed
-    };
-  }, [fileName, bucketName, pollingCount, toast]);
+      // Set up interval for subsequent checks
+      pollingIntervalRef.current = setInterval(
+        checkForProcessedVideo,
+        POLLING_INTERVAL
+      );
+    }
+  }, [
+    fileName,
+    bucketName,
+    pollingAttempt,
+    isLoading,
+    toast,
+    MAX_POLLING_ATTEMPTS,
+    POLLING_INTERVAL,
+  ]);
 
   const handleBackClick = () => {
     router.push('/');
@@ -120,9 +192,40 @@ function SwingAnalysisContent() {
   const handleRetryClick = () => {
     setIsLoading(true);
     setError(null);
-    setPollingCount(0);
-    // Start polling again
-    router.refresh();
+    setPollingAttempt(0);
+    setVideoBlob(null);
+    lastPollTime.current = Date.now();
+
+    // Clear the existing interval if any
+    if (pollingIntervalRef.current) {
+      clearInterval(pollingIntervalRef.current);
+      pollingIntervalRef.current = null;
+    }
+  };
+
+  // Fetch video with content type handling but keep it minimal
+  const fetchVideoWithContentType = async (url: string) => {
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch video: ${response.status}`);
+    }
+
+    const blob = await response.blob();
+
+    // If the content type is missing or not a video, create a new blob with correct type
+    if (!blob.type || !blob.type.includes('video/')) {
+      const fileExt = url.split('.').pop()?.toLowerCase();
+      const mimeType =
+        fileExt === 'mp4'
+          ? 'video/mp4'
+          : fileExt === 'webm'
+            ? 'video/webm'
+            : 'video/mp4'; // default to mp4
+
+      return new Blob([await blob.arrayBuffer()], { type: mimeType });
+    }
+
+    return blob;
   };
 
   return (
@@ -150,8 +253,15 @@ function SwingAnalysisContent() {
               <p className="text-gray-400">
                 Our AI is processing your golf swing...
               </p>
-              {pollingCount > 5 && (
-                <p className="text-gray-500 mt-4 max-w-md mx-auto text-sm">
+              <p className="text-gray-500 mt-4 max-w-md mx-auto text-sm">
+                Time elapsed:{' '}
+                {Math.round((pollingAttempt * POLLING_INTERVAL) / 1000)} seconds
+              </p>
+              <p className="text-gray-500 mt-2 max-w-md mx-auto text-sm">
+                Polling attempt: {pollingAttempt + 1} of {MAX_POLLING_ATTEMPTS}
+              </p>
+              {pollingAttempt > 3 && (
+                <p className="text-gray-500 mt-2 max-w-md mx-auto text-sm">
                   This usually takes 30-60 seconds. We'll notify you as soon as
                   it's ready!
                 </p>

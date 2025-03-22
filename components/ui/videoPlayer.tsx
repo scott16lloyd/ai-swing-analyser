@@ -26,21 +26,102 @@ export default function VideoPlayer({
     height: 0,
   });
   const animationRef = useRef<number>();
+  const processedBlobRef = useRef<Blob | null>(null);
 
   // Create the blob URL when the component mounts or when videoBlob changes
   useEffect(() => {
     // Clean up any existing blob URL
     if (blobUrl) {
       URL.revokeObjectURL(blobUrl);
+      setBlobUrl(null);
     }
 
-    // Create a new blob URL if we have a video blob
+    if (processedBlobRef.current) {
+      processedBlobRef.current = null;
+    }
+
+    // Process and create a new blob URL if we have a video blob
+    // Process and create a new blob URL if we have a video blob
     if (videoBlob) {
-      const url = URL.createObjectURL(videoBlob);
-      setBlobUrl(url);
-      console.log('Created blob URL:', url);
-    } else {
-      setBlobUrl(null);
+      // Check if blob has a valid video type
+      const validVideoTypes = ['video/mp4', 'video/webm', 'video/ogg'];
+
+      if (validVideoTypes.includes(videoBlob.type)) {
+        // If video has a valid type, use it directly
+        console.log(`Using video with valid type: ${videoBlob.type}`);
+        processedBlobRef.current = videoBlob;
+        const url = URL.createObjectURL(videoBlob);
+        setBlobUrl(url);
+        console.log('Created blob URL:', url);
+      } else {
+        // If video doesn't have a valid type, we need to process it
+        console.log(`Video has invalid type: ${videoBlob.type}, processing...`);
+
+        // Read the blob as an array buffer to examine its contents
+        const reader = new FileReader();
+
+        reader.onload = () => {
+          if (!reader.result) return;
+
+          const arrayBuffer = reader.result as ArrayBuffer;
+          const uint8Array = new Uint8Array(arrayBuffer);
+
+          // Try to detect format by examining the file header
+          let detectedType = 'video/webm'; // Default to WebM
+
+          // Check for WebM signature (0x1A 0x45 0xDF 0xA3)
+          if (
+            uint8Array[0] === 0x1a &&
+            uint8Array[1] === 0x45 &&
+            uint8Array[2] === 0xdf &&
+            uint8Array[3] === 0xa3
+          ) {
+            detectedType = 'video/webm';
+            console.log('Detected WebM format from file signature');
+          }
+          // Check for MP4 signature ('ftyp')
+          else if (
+            uint8Array[4] === 0x66 &&
+            uint8Array[5] === 0x74 &&
+            uint8Array[6] === 0x79 &&
+            uint8Array[7] === 0x70
+          ) {
+            detectedType = 'video/mp4';
+            console.log('Detected MP4 format from file signature');
+          }
+          // If no clear signature, check if the original type contains any hints
+          else if (videoBlob.type.includes('mp4')) {
+            detectedType = 'video/mp4';
+            console.log('Using MP4 format based on original type hint');
+          } else if (videoBlob.type.includes('webm')) {
+            detectedType = 'video/webm';
+            console.log('Using WebM format based on original type hint');
+          } else {
+            console.log('Could not detect video format, defaulting to WebM');
+          }
+
+          // Create a new blob with the correct type
+          processedBlobRef.current = new Blob([arrayBuffer], {
+            type: detectedType,
+          });
+          const url = URL.createObjectURL(processedBlobRef.current);
+          setBlobUrl(url);
+          console.log(
+            `Created blob URL with corrected type ${detectedType}:`,
+            url
+          );
+        };
+
+        reader.onerror = () => {
+          console.error('Error reading video blob');
+          // Fallback to using the original blob
+          processedBlobRef.current = videoBlob;
+          const url = URL.createObjectURL(videoBlob);
+          setBlobUrl(url);
+        };
+
+        reader.readAsArrayBuffer(videoBlob);
+      }
     }
 
     // Cleanup function to revoke the URL when the component unmounts
@@ -173,10 +254,45 @@ export default function VideoPlayer({
       }
     };
 
+    const handleError = (e: Event) => {
+      console.error('Video error:', e);
+      console.error('Video error code:', video.error?.code);
+      console.error('Video error message:', video.error?.message);
+
+      // If there's a blob URL and the video failed to load,
+      // try creating a new blob with WebM type explicitly
+      if (
+        processedBlobRef.current &&
+        processedBlobRef.current.type !== 'video/webm'
+      ) {
+        console.log('Trying to recreate blob with WebM type');
+        const reader = new FileReader();
+
+        reader.onload = () => {
+          if (!reader.result) return;
+          const newBlob = new Blob([reader.result], { type: 'video/webm' });
+          processedBlobRef.current = newBlob;
+
+          // Revoke old URL
+          if (blobUrl) {
+            URL.revokeObjectURL(blobUrl);
+          }
+
+          // Create new URL
+          const newUrl = URL.createObjectURL(newBlob);
+          setBlobUrl(newUrl);
+          console.log('Created new blob URL with WebM type:', newUrl);
+        };
+
+        reader.readAsArrayBuffer(processedBlobRef.current);
+      }
+    };
+
     // Add event listeners
     video.addEventListener('loadedmetadata', handleLoadedMetadata);
     video.addEventListener('timeupdate', handleTimeUpdate);
     video.addEventListener('ended', handleEnded);
+    video.addEventListener('error', handleError);
 
     // Handle window resize
     window.addEventListener('resize', resizeCanvas);
@@ -194,6 +310,7 @@ export default function VideoPlayer({
       video.removeEventListener('loadedmetadata', handleLoadedMetadata);
       video.removeEventListener('timeupdate', handleTimeUpdate);
       video.removeEventListener('ended', handleEnded);
+      video.removeEventListener('error', handleError);
       window.removeEventListener('resize', resizeCanvas);
 
       // Cancel animation frame
