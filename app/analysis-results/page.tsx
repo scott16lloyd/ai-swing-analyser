@@ -113,7 +113,7 @@ function SwingAnalysisContent() {
 
                 toast({
                   title: 'Analysis Complete',
-                  description: 'Your swing has been analyzed successfully!',
+                  description: 'Your swing has been analysed successfully!',
                   variant: 'default',
                 });
 

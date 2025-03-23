@@ -82,7 +82,7 @@ export default function VideoCapturePage() {
       toast({
         title: 'Video Uploaded',
         description:
-          'Your swing is being analyzed. You will be redirected shortly...',
+          'Your swing is being analysed. You will be redirected shortly...',
         variant: 'default',
       });
 
@@ -769,7 +769,7 @@ export default function VideoCapturePage() {
     // Close audio context if it exists
     if (audioContextRef.current) {
       try {
-        // Disconnect analyzer if it exists
+        // Disconnect analyser if it exists
         if (analyserRef.current) {
           analyserRef.current.disconnect();
           analyserRef.current = null;
@@ -927,7 +927,7 @@ export default function VideoCapturePage() {
         ) : isProcessing ? (
           // Show processing indicator
           <div className="absolute inset-0 flex items-center justify-center bg-black/80">
-            <div className="text-center">
+            <div className="text-center w-screen">
               <div className="w-16 h-16 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
               <h2 className="text-xl font-semibold mb-2">Processing Video</h2>
               <p className="text-gray-400">
@@ -936,7 +936,7 @@ export default function VideoCapturePage() {
             </div>
           </div>
         ) : recordedVideoBlob ? (
-          <div className="relative h-full max-w-screen">
+          <div className="relative h-full w-full overscroll-none">
             <VideoPlayer
               videoBlob={trimmedVideoBlob || recordedVideoBlob}
               impactTimeLabel={impactTimeLabel}

@@ -448,7 +448,7 @@ export default function VideoPlayer({
   return (
     <div
       ref={containerRef}
-      className="relative h-full max-w-full flex flex-col bg-black overflow-none"
+      className="relative h-full w-full flex flex-col bg-black overflow-none"
     >
       {/* Hidden video element for processing */}
       <video

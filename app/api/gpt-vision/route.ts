@@ -13,12 +13,12 @@ export async function POST() {
       messages: [
         {
           role: 'system',
-          content: 'You are an expert golf swing analyst. Analyze the provided golf swing for posture, balance, and alignment, and suggest improvements based on professional golfers\' techniques.',
+          content: 'You are an expert golf swing analyst. Analyse the provided golf swing for posture, balance, and alignment, and suggest improvements based on professional golfers\' techniques.',
         },
         {
           role: 'user',
           content: [
-            { type: "text", text: "You are an expert golf swing analyst. Analyze the provided golf swing data and image. Break down the swing into the following sections: 1. Address 2. Toe up 3. Top of the backswing 4. Downswing 5. Impact 6. Follow-through. For each section: - Provide a score out of 10 based on posture, balance, and alignment - Identify the strengths. - Highlight weaknesses. - Suggest specific improvements." },
+            { type: "text", text: "You are an expert golf swing analyst. Analyse the provided golf swing data and image. Break down the swing into the following sections: 1. Address 2. Toe up 3. Top of the backswing 4. Downswing 5. Impact 6. Follow-through. For each section: - Provide a score out of 10 based on posture, balance, and alignment - Identify the strengths. - Highlight weaknesses. - Suggest specific improvements." },
         {
           type: "image_url",
           image_url: {
