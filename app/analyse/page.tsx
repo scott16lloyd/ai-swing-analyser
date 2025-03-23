@@ -561,9 +561,9 @@ export default function VideoCapturePage() {
       const source: MediaStreamAudioSourceNode =
         audioContext.createMediaStreamSource(streamRef.current);
 
-      // Create analyzer node for frequency analysis
+      // Create analyzer node for frequency analysis - still useful but less strict
       const analyzer: AnalyserNode = audioContext.createAnalyser();
-      analyzer.fftSize = 2048; // Larger FFT for better frequency resolution
+      analyzer.fftSize = 2048;
       source.connect(analyzer);
 
       // Create a script processor for direct access to audio data
@@ -575,14 +575,14 @@ export default function VideoCapturePage() {
       source.connect(processor);
       processor.connect(audioContext.destination);
 
-      // Enhanced calibration and detection parameters
-      const CALIBRATION_FRAMES: number = 60; // Longer calibration for better baseline
-      const VOLUME_HISTORY_SIZE: number = 20; // Larger history for better trend analysis
-      const IMMEDIATE_HISTORY_SIZE: number = 5; // For detecting sudden spikes
+      // BALANCED PARAMETERS WITH SLIGHTLY REDUCED SENSITIVITY
+      const CALIBRATION_FRAMES: number = 45; // Medium-length calibration (45 frames)
+      const VOLUME_HISTORY_SIZE: number = 15; // Medium history size
+      const IMMEDIATE_HISTORY_SIZE: number = 5;
 
-      // Frequency analysis for golf driver impact (typically 2-5kHz range)
-      const LOW_FREQ: number = 2000; // Lower bound for driver impact frequency in Hz
-      const HIGH_FREQ: number = 5000; // Upper bound for driver impact frequency in Hz
+      // Frequency analysis for golf driver impact (slightly narrower range)
+      const LOW_FREQ: number = 1900; // Adjusted from 1800 Hz
+      const HIGH_FREQ: number = 5200; // Adjusted from 5500 Hz
 
       // These values will be adjusted during calibration
       let baselineVolume: number = 0;
@@ -590,12 +590,12 @@ export default function VideoCapturePage() {
         analyzer.frequencyBinCount
       ).fill(0);
       let calibrationFrames: number = 0;
-      let threshold: number = 0.05; // Starting threshold, will be adjusted
+      let threshold: number = 0.05; // Starting threshold
       let maxVolume: number = 0;
       let isPeaking: boolean = false;
       let peakTime: number = 0;
       let consecutiveFramesAboveThreshold: number = 0;
-      const REQUIRED_CONSECUTIVE_FRAMES: number = 2; // Require multiple frames for better confirmation
+      const REQUIRED_CONSECUTIVE_FRAMES: number = 1; // More sensitive - only require 1 frame
 
       // Track volume over time for better detection
       const volumeHistory: number[] = new Array(VOLUME_HISTORY_SIZE).fill(0);
@@ -618,6 +618,7 @@ export default function VideoCapturePage() {
       };
 
       // Function to check if a sound matches driver impact frequency profile
+      // More lenient frequency profile matching
       const matchesDriverProfile = (): boolean => {
         analyzer.getByteFrequencyData(frequencyData);
 
@@ -643,15 +644,15 @@ export default function VideoCapturePage() {
         }
 
         // Driver impacts should have significant energy in our target range
-        // Return a ratio of target energy to total energy
+        // Lower ratio requirement from 0.4 to 0.3 (30% instead of 40%)
         const ratio: number = totalEnergy > 0 ? targetEnergy / totalEnergy : 0;
 
-        // Debug frequency
+        // Debug frequency every 10 frames for performance
         if (calibrationFrames % 10 === 0) {
           console.log(`Frequency match ratio: ${(ratio * 100).toFixed(1)}%`);
         }
 
-        return ratio > 0.4; // At least 40% of energy should be in target range
+        return ratio > 0.33; // Adjusted from 0.3 to 0.33 - requiring a stronger frequency match
       };
 
       // Function to update history arrays
@@ -670,13 +671,13 @@ export default function VideoCapturePage() {
       };
 
       // Function to check for significant spike relative to recent average
+      // More sensitive spike detection
       const isSignificantSpike = (volumeLevel: number): boolean => {
         const recentAvg: number =
           immediateHistory.reduce((a, b) => a + b, 0) / immediateHistory.length;
 
-        // A spike should be significantly higher than the recent average
-        // For a driver impact, we expect at least 3.5x the recent level
-        return volumeLevel > recentAvg * 3.5;
+        // Adjusted spike ratio to 3.0x (slightly less sensitive than 2.8x)
+        return volumeLevel > recentAvg * 3.0;
       };
 
       // Use console for debugging
@@ -730,8 +731,8 @@ export default function VideoCapturePage() {
 
           // After calibration, set threshold higher than baseline
           if (calibrationFrames === CALIBRATION_FRAMES) {
-            // Set threshold based on baseline volume - higher multiplier for driving range
-            threshold = Math.max(0.08, baselineVolume * 10); // Increased multiplier for better filtering
+            // Slightly higher threshold for less sensitivity
+            threshold = Math.max(0.06, baselineVolume * 8.5);
 
             console.log(
               `Calibration complete - Baseline: ${baselineVolume.toFixed(4)}, Threshold: ${threshold.toFixed(4)}`
@@ -754,7 +755,7 @@ export default function VideoCapturePage() {
           levelIndicator.style.backgroundColor =
             volumeLevel > threshold ? 'red' : 'green';
 
-          // Update debug info occasionally for better performance
+          // Update every 5 frames for better performance
           if (calibrationFrames % 5 === 0) {
             debugDiv.innerText = `Vol: ${volumeLevel.toFixed(4)}, Threshold: ${threshold.toFixed(4)}, Max: ${maxVolume.toFixed(4)}`;
           }
@@ -772,24 +773,25 @@ export default function VideoCapturePage() {
             consecutiveFramesAboveThreshold = 0;
           }
 
-          // Multi-factor detection:
-          // 1. Volume must be above threshold for multiple consecutive frames
-          // 2. Must be a significant spike compared to recent history
-          // 3. Should match frequency profile of a driver impact
+          // Multi-factor detection - more balanced approach:
+          // Volume must be above threshold (always required)
+          // Plus at least one of the following additional conditions:
+          // 1. Must be a significant spike compared to recent history
+          // 2. Should match frequency profile of a driver impact
           const meetsVolumeRequirement: boolean =
             consecutiveFramesAboveThreshold >= REQUIRED_CONSECUTIVE_FRAMES;
           const meetsSpikeCriteria: boolean = isSignificantSpike(volumeLevel);
           const meetsFrequencyCriteria: boolean = matchesDriverProfile();
 
-          // Detect impact when all criteria are met
+          // Detect impact when volume requirement is met plus at least one other criterion
+          // This means we need volume + (frequency OR spike), not all three like before
           if (
             meetsVolumeRequirement &&
-            meetsSpikeCriteria &&
-            meetsFrequencyCriteria &&
+            (meetsSpikeCriteria || meetsFrequencyCriteria) &&
             !isPeaking
           ) {
             console.log(
-              `🔊 IMPACT SOUND DETECTED! Level: ${volumeLevel.toFixed(4)}, Ratio to avg: ${(volumeLevel / (volumeHistory.reduce((a, b) => a + b, 0) / volumeHistory.length)).toFixed(2)}x, Frequency match: ${meetsFrequencyCriteria ? 'YES' : 'NO'}`
+              `🔊 IMPACT SOUND DETECTED! Level: ${volumeLevel.toFixed(4)}, Spike: ${meetsSpikeCriteria ? 'YES' : 'NO'}, Frequency: ${meetsFrequencyCriteria ? 'YES' : 'NO'}`
             );
             isPeaking = true;
             peakTime = Date.now();
