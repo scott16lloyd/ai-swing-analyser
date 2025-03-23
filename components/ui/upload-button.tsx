@@ -11,7 +11,7 @@ interface ProcessVideoOptions {
   onProgress?: (progress: number) => void;
 }
 
-interface ProcessVideoResponse {
+export interface ProcessVideoResponse {
   success: boolean;
   bucketName: string;
   fileName: string;
@@ -35,7 +35,7 @@ export async function uploadVideoDirectly(
     cameraFacing = 'unknown',
     quality = 'high',
     bucketName = process.env.STORAGE_BUCKET_NAME || '',
-    destinationPath = 'unprocessed_video/test', // Simplified path
+    destinationPath = 'unprocessed_video/user',
     onProgress = () => {},
   } = options;
 
@@ -98,7 +98,7 @@ export async function uploadVideoDirectly(
     // Return a success response
     return {
       success: true,
-      bucketName: bucketName || 'default-bucket',
+      bucketName: bucketName,
       fileName: fullPath,
       publicUrl,
       metadata: {
@@ -122,6 +122,7 @@ interface VideoUploadButtonProps {
   className?: string;
   disabled?: boolean;
   useDirectUpload?: boolean;
+  uploadOptions?: Partial<ProcessVideoOptions>;
 }
 
 // Simplified component for testing
@@ -133,37 +134,14 @@ export function VideoUploadButton({
   className = '',
   disabled = false,
   useDirectUpload = true,
+  uploadOptions = {},
 }: VideoUploadButtonProps) {
   const [uploading, setUploading] = useState<boolean>(false);
   const [progress, setProgress] = useState<number>(0);
-  const [diagnosticResult, setDiagnosticResult] = useState<any>(null);
   const { toast } = useToast();
 
   const updateProgress = (value: number) => {
     setProgress(value);
-  };
-
-  // Add diagnostic test function
-  const runDiagnosticTest = async () => {
-    try {
-      toast({ title: 'Running diagnostic test...' });
-      const storageModule = await import('@/app/actions/storage');
-      const result = await storageModule.testGoogleCloudStorage();
-      setDiagnosticResult(result);
-      toast({
-        title: result.success ? 'Test succeeded' : 'Test failed',
-        description: result.success
-          ? 'Diagnostic upload worked'
-          : `Failed with status: ${result.status}`,
-      });
-    } catch (error) {
-      console.error('Diagnostic test error:', error);
-      toast({
-        title: 'Diagnostic test error',
-        description: error instanceof Error ? error.message : 'Unknown error',
-        variant: 'destructive',
-      });
-    }
   };
 
   const handleProcessVideo = async () => {
@@ -189,6 +167,7 @@ export function VideoUploadButton({
         cameraFacing,
         quality: 'high',
         onProgress: updateProgress,
+        ...uploadOptions,
       });
 
       toast({
@@ -237,27 +216,6 @@ export function VideoUploadButton({
             className="h-full bg-blue-500 transition-all duration-300 ease-in-out"
             style={{ width: `${progress}%` }}
           ></div>
-        </div>
-      )}
-
-      {/* Add diagnostic test button */}
-      <button
-        className="mt-2 px-4 py-2 bg-gray-500 text-white rounded-md"
-        onClick={runDiagnosticTest}
-        disabled={uploading}
-      >
-        Run Diagnostic Test
-      </button>
-
-      {/* Display diagnostic results if available */}
-      {diagnosticResult && (
-        <div className="mt-2 p-2 bg-gray-100 rounded text-sm">
-          <p>
-            Diagnostic result:{' '}
-            {diagnosticResult.success ? '✅ Success' : '❌ Failed'}
-          </p>
-          {diagnosticResult.status && <p>Status: {diagnosticResult.status}</p>}
-          {diagnosticResult.error && <p>Error: {diagnosticResult.error}</p>}
         </div>
       )}
     </div>
