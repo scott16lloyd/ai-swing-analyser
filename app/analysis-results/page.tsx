@@ -248,7 +248,7 @@ function SwingAnalysisContent() {
             <div className="text-center">
               <div className="w-16 h-16 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
               <h2 className="text-xl font-semibold mb-2">
-                Analyzing Your Swing
+                Analysing Your Swing
               </h2>
               <p className="text-gray-400">
                 Our AI is processing your golf swing...
@@ -262,7 +262,7 @@ function SwingAnalysisContent() {
               </p>
               {pollingAttempt > 3 && (
                 <p className="text-gray-500 mt-2 max-w-md mx-auto text-sm">
-                  This usually takes 30-60 seconds. We'll notify you as soon as
+                  This usually takes 1-2 minutes. We'll notify you as soon as
                   it's ready!
                 </p>
               )}
