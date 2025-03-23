@@ -490,8 +490,6 @@ export default function VideoCapturePage() {
     }
   };
 
-  // This is the updated startImpactDetectionDirect function from VideoCapturePage.tsx
-
   const startImpactDetectionDirect = (): void => {
     console.log('Starting direct impact detection');
 
@@ -504,7 +502,7 @@ export default function VideoCapturePage() {
       console.log('🎤 Starting sound detection...');
 
       // Add a visible debug div
-      const debugDiv = document.createElement('div');
+      const debugDiv: HTMLDivElement = document.createElement('div');
       debugDiv.style.position = 'absolute';
       debugDiv.style.top = '70px';
       debugDiv.style.left = '10px';
@@ -516,7 +514,7 @@ export default function VideoCapturePage() {
       document.body.appendChild(debugDiv);
 
       // Create a level meter
-      const meterDiv = document.createElement('div');
+      const meterDiv: HTMLDivElement = document.createElement('div');
       meterDiv.style.position = 'absolute';
       meterDiv.style.top = '110px';
       meterDiv.style.left = '10px';
@@ -525,7 +523,7 @@ export default function VideoCapturePage() {
       meterDiv.style.backgroundColor = '#333';
       meterDiv.style.zIndex = '1000';
 
-      const levelIndicator = document.createElement('div');
+      const levelIndicator: HTMLDivElement = document.createElement('div');
       levelIndicator.style.height = '100%';
       levelIndicator.style.width = '0%';
       levelIndicator.style.backgroundColor = 'green';
@@ -533,8 +531,9 @@ export default function VideoCapturePage() {
       document.body.appendChild(meterDiv);
 
       // Create a simple audio context
-      const AudioContextClass =
-        window.AudioContext || (window as any).webkitAudioContext;
+      const AudioContextClass: typeof AudioContext =
+        window.AudioContext ||
+        ((window as any).webkitAudioContext as typeof AudioContext);
 
       if (!AudioContextClass) {
         console.error('AudioContext not supported');
@@ -542,11 +541,12 @@ export default function VideoCapturePage() {
         return;
       }
 
-      const audioContext = new AudioContextClass();
+      const audioContext: AudioContext = new AudioContextClass();
       audioContextRef.current = audioContext;
 
       // Get audio tracks from stream
-      const audioTracks = streamRef.current.getAudioTracks();
+      const audioTracks: MediaStreamTrack[] =
+        streamRef.current.getAudioTracks();
 
       if (audioTracks.length === 0) {
         console.error('No audio tracks in stream');
@@ -558,24 +558,126 @@ export default function VideoCapturePage() {
       debugDiv.innerText = `Found audio: ${audioTracks[0].label}`;
 
       // Create audio source
-      const source = audioContext.createMediaStreamSource(streamRef.current);
+      const source: MediaStreamAudioSourceNode =
+        audioContext.createMediaStreamSource(streamRef.current);
+
+      // Create analyzer node for frequency analysis
+      const analyzer: AnalyserNode = audioContext.createAnalyser();
+      analyzer.fftSize = 2048; // Larger FFT for better frequency resolution
+      source.connect(analyzer);
 
       // Create a script processor for direct access to audio data
-      const processor = audioContext.createScriptProcessor(2048, 1, 1);
+      const processor: ScriptProcessorNode = audioContext.createScriptProcessor(
+        2048,
+        1,
+        1
+      );
       source.connect(processor);
       processor.connect(audioContext.destination);
 
+      // Enhanced calibration and detection parameters
+      const CALIBRATION_FRAMES: number = 60; // Longer calibration for better baseline
+      const VOLUME_HISTORY_SIZE: number = 20; // Larger history for better trend analysis
+      const IMMEDIATE_HISTORY_SIZE: number = 5; // For detecting sudden spikes
+
+      // Frequency analysis for golf driver impact (typically 2-5kHz range)
+      const LOW_FREQ: number = 2000; // Lower bound for driver impact frequency in Hz
+      const HIGH_FREQ: number = 5000; // Upper bound for driver impact frequency in Hz
+
       // These values will be adjusted during calibration
-      let baselineVolume = 0;
-      let calibrationFrames = 0;
-      let threshold = 0.05; // Starting threshold, will be adjusted
-      let maxVolume = 0;
-      let isPeaking = false;
-      let peakTime = 0;
+      let baselineVolume: number = 0;
+      let baselineFrequencyProfile: number[] = new Array(
+        analyzer.frequencyBinCount
+      ).fill(0);
+      let calibrationFrames: number = 0;
+      let threshold: number = 0.05; // Starting threshold, will be adjusted
+      let maxVolume: number = 0;
+      let isPeaking: boolean = false;
+      let peakTime: number = 0;
+      let consecutiveFramesAboveThreshold: number = 0;
+      const REQUIRED_CONSECUTIVE_FRAMES: number = 2; // Require multiple frames for better confirmation
 
       // Track volume over time for better detection
-      const volumeHistory: number[] = [];
-      const HISTORY_SIZE = 10; // Keep track of last 10 volume readings
+      const volumeHistory: number[] = new Array(VOLUME_HISTORY_SIZE).fill(0);
+      const immediateHistory: number[] = new Array(IMMEDIATE_HISTORY_SIZE).fill(
+        0
+      );
+
+      // Frequency data arrays
+      const frequencyData: Uint8Array = new Uint8Array(
+        analyzer.frequencyBinCount
+      );
+
+      // Function to calculate volume (RMS) from audio data
+      const calculateVolume = (input: Float32Array): number => {
+        let sum: number = 0;
+        for (let i: number = 0; i < input.length; i++) {
+          sum += input[i] * input[i];
+        }
+        return Math.sqrt(sum / input.length);
+      };
+
+      // Function to check if a sound matches driver impact frequency profile
+      const matchesDriverProfile = (): boolean => {
+        analyzer.getByteFrequencyData(frequencyData);
+
+        // Calculate frequency indices for our target range
+        const lowIndex: number = Math.floor(
+          (LOW_FREQ * analyzer.frequencyBinCount) / audioContext.sampleRate
+        );
+        const highIndex: number = Math.ceil(
+          (HIGH_FREQ * analyzer.frequencyBinCount) / audioContext.sampleRate
+        );
+
+        // Calculate energy in our target frequency range vs overall energy
+        let targetEnergy: number = 0;
+        let totalEnergy: number = 0;
+
+        for (let i: number = 0; i < frequencyData.length; i++) {
+          const value: number = frequencyData[i] / 255; // Normalize to 0-1
+          totalEnergy += value * value;
+
+          if (i >= lowIndex && i <= highIndex) {
+            targetEnergy += value * value;
+          }
+        }
+
+        // Driver impacts should have significant energy in our target range
+        // Return a ratio of target energy to total energy
+        const ratio: number = totalEnergy > 0 ? targetEnergy / totalEnergy : 0;
+
+        // Debug frequency
+        if (calibrationFrames % 10 === 0) {
+          console.log(`Frequency match ratio: ${(ratio * 100).toFixed(1)}%`);
+        }
+
+        return ratio > 0.4; // At least 40% of energy should be in target range
+      };
+
+      // Function to update history arrays
+      const updateHistories = (volumeLevel: number): void => {
+        // Update overall history
+        volumeHistory.push(volumeLevel);
+        if (volumeHistory.length > VOLUME_HISTORY_SIZE) {
+          volumeHistory.shift(); // Remove oldest value
+        }
+
+        // Update immediate history for spike detection
+        immediateHistory.push(volumeLevel);
+        if (immediateHistory.length > IMMEDIATE_HISTORY_SIZE) {
+          immediateHistory.shift();
+        }
+      };
+
+      // Function to check for significant spike relative to recent average
+      const isSignificantSpike = (volumeLevel: number): boolean => {
+        const recentAvg: number =
+          immediateHistory.reduce((a, b) => a + b, 0) / immediateHistory.length;
+
+        // A spike should be significantly higher than the recent average
+        // For a driver impact, we expect at least 3.5x the recent level
+        return volumeLevel > recentAvg * 3.5;
+      };
 
       // Use console for debugging
       console.log('🎤 Sound detection started - watch for console logs');
@@ -589,6 +691,7 @@ export default function VideoCapturePage() {
           // Clean up when not recording
           try {
             processor.disconnect();
+            analyzer.disconnect();
             source.disconnect();
             document.body.removeChild(debugDiv);
             document.body.removeChild(meterDiv);
@@ -599,52 +702,59 @@ export default function VideoCapturePage() {
         }
 
         // Get audio data
-        const input = e.inputBuffer.getChannelData(0);
+        const input: Float32Array = e.inputBuffer.getChannelData(0);
+        const volumeLevel: number = calculateVolume(input);
 
-        // Calculate volume (RMS)
-        let sum = 0;
-        for (let i = 0; i < input.length; i++) {
-          sum += input[i] * input[i];
-        }
-        const volumeLevel = Math.sqrt(sum / input.length);
+        // Update histories with current volume
+        updateHistories(volumeLevel);
 
-        // Add to history
-        volumeHistory.push(volumeLevel);
-        if (volumeHistory.length > HISTORY_SIZE) {
-          volumeHistory.shift(); // Remove oldest value
-        }
-
-        // First 30 frames are for calibration
-        if (calibrationFrames < 30) {
+        // CALIBRATION PHASE
+        if (calibrationFrames < CALIBRATION_FRAMES) {
+          // Update baseline volume
           baselineVolume =
             (baselineVolume * calibrationFrames + volumeLevel) /
             (calibrationFrames + 1);
+
+          // Also capture frequency profile during calibration
+          if (calibrationFrames % 5 === 0) {
+            analyzer.getByteFrequencyData(frequencyData);
+            for (let i: number = 0; i < frequencyData.length; i++) {
+              baselineFrequencyProfile[i] =
+                (baselineFrequencyProfile[i] * (calibrationFrames / 5) +
+                  frequencyData[i]) /
+                (calibrationFrames / 5 + 1);
+            }
+          }
+
           calibrationFrames++;
 
           // After calibration, set threshold higher than baseline
-          if (calibrationFrames === 30) {
-            // Set threshold based on baseline volume
-            threshold = Math.max(0.05, baselineVolume * 6); // Reduced multiplier for better detection
+          if (calibrationFrames === CALIBRATION_FRAMES) {
+            // Set threshold based on baseline volume - higher multiplier for driving range
+            threshold = Math.max(0.08, baselineVolume * 10); // Increased multiplier for better filtering
+
             console.log(
               `Calibration complete - Baseline: ${baselineVolume.toFixed(4)}, Threshold: ${threshold.toFixed(4)}`
             );
             debugDiv.innerText = `Ready! Baseline: ${baselineVolume.toFixed(4)}, Threshold: ${threshold.toFixed(4)}`;
 
-            // Also show a toast notification so the user knows calibration is done
+            // Show a toast notification so the user knows calibration is done
             toast({
               title: 'Sound Detection Ready',
               description: 'Golf impact sound detection is active',
               variant: 'default',
             });
           }
-        } else {
+        }
+        // DETECTION PHASE
+        else {
           // Update debug display
-          const percent = Math.min(100, Math.floor(volumeLevel * 1000));
+          const percent: number = Math.min(100, Math.floor(volumeLevel * 1000));
           levelIndicator.style.width = `${percent}%`;
           levelIndicator.style.backgroundColor =
             volumeLevel > threshold ? 'red' : 'green';
 
-          // Update every 5 frames for better performance
+          // Update debug info occasionally for better performance
           if (calibrationFrames % 5 === 0) {
             debugDiv.innerText = `Vol: ${volumeLevel.toFixed(4)}, Threshold: ${threshold.toFixed(4)}, Max: ${maxVolume.toFixed(4)}`;
           }
@@ -655,26 +765,39 @@ export default function VideoCapturePage() {
             maxVolume = volumeLevel;
           }
 
-          // Calculate average of recent volumes
-          const avgVolume =
-            volumeHistory.reduce((a, b) => a + b, 0) / volumeHistory.length;
+          // Check if volume exceeds threshold
+          if (volumeLevel > threshold) {
+            consecutiveFramesAboveThreshold++;
+          } else {
+            consecutiveFramesAboveThreshold = 0;
+          }
 
-          // Improved detection with spike detection
-          // Volume must be significantly above both threshold and recent average
-          const isSignificantSpike =
-            volumeLevel > threshold && volumeLevel > avgVolume * 2;
+          // Multi-factor detection:
+          // 1. Volume must be above threshold for multiple consecutive frames
+          // 2. Must be a significant spike compared to recent history
+          // 3. Should match frequency profile of a driver impact
+          const meetsVolumeRequirement: boolean =
+            consecutiveFramesAboveThreshold >= REQUIRED_CONSECUTIVE_FRAMES;
+          const meetsSpikeCriteria: boolean = isSignificantSpike(volumeLevel);
+          const meetsFrequencyCriteria: boolean = matchesDriverProfile();
 
-          // Detect impact - if volume exceeds threshold and is a significant spike
-          if (isSignificantSpike && !isPeaking) {
+          // Detect impact when all criteria are met
+          if (
+            meetsVolumeRequirement &&
+            meetsSpikeCriteria &&
+            meetsFrequencyCriteria &&
+            !isPeaking
+          ) {
             console.log(
-              `🔊 IMPACT SOUND DETECTED! Level: ${volumeLevel.toFixed(4)}, Avg: ${avgVolume.toFixed(4)}`
+              `🔊 IMPACT SOUND DETECTED! Level: ${volumeLevel.toFixed(4)}, Ratio to avg: ${(volumeLevel / (volumeHistory.reduce((a, b) => a + b, 0) / volumeHistory.length)).toFixed(2)}x, Frequency match: ${meetsFrequencyCriteria ? 'YES' : 'NO'}`
             );
             isPeaking = true;
             peakTime = Date.now();
 
             // Record the time of impact
-            const impactTime = (Date.now() - startTimeRef.current) / 1000;
-            const formattedTime = formatDuration(impactTime);
+            const impactTime: number =
+              (Date.now() - startTimeRef.current) / 1000;
+            const formattedTime: string = formatDuration(impactTime);
             console.log(
               `Setting impact time to ${impactTime}s (formatted: ${formattedTime})`
             );
@@ -708,12 +831,12 @@ export default function VideoCapturePage() {
               variant: 'default',
             });
 
-            // Schedule auto-stop after a longer delay to ensure we capture the full swing follow-through
+            // Schedule auto-stop after a delay to ensure we capture the full swing follow-through
             if (autoStopTimeoutRef.current) {
               clearTimeout(autoStopTimeoutRef.current);
             }
 
-            // INCREASED from 1.5 to 2.5 seconds to ensure we capture more after the impact
+            // Stop recording 2.5 seconds after impact to capture follow-through
             autoStopTimeoutRef.current = setTimeout(() => {
               console.log(
                 `Auto-stop triggered. Impact time was: ${globalImpactTime}`
@@ -727,13 +850,14 @@ export default function VideoCapturePage() {
               // Clean up
               try {
                 processor.disconnect();
+                analyzer.disconnect();
                 source.disconnect();
                 document.body.removeChild(debugDiv);
                 document.body.removeChild(meterDiv);
               } catch (err) {
                 // Ignore cleanup errors
               }
-            }, 2500); // Increased delay after impact detection
+            }, 2500);
 
             return;
           }
