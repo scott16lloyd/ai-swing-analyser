@@ -278,9 +278,6 @@ async function mobileTrimVideoHighQuality(
     sourceVideo.onseeked = () => {
       console.log(`Successfully seeked to ${sourceVideo.currentTime.toFixed(2)}s`);
       
-      // ADDED playbackRate reduction for more precise frame capture in critical moments
-      sourceVideo.playbackRate = 0.8; // Slow down playback to ensure we don't miss frames
-      
       sourceVideo.play()
         .then(() => {
           console.log('Video playback started, beginning frame processing');
@@ -421,13 +418,15 @@ async function standardTrimVideo(
         });
     };
     
+    const maxDuration = Math.min(30, endTime - startTime);
+    
     // Set a safety timeout
     const safetyTimeout = setTimeout(() => {
       if (mediaRecorder.state !== 'inactive') {
         console.warn('Trim operation taking too long, forcing completion');
         mediaRecorder.stop();
       }
-    }, 30000); // 30-second safety timeout
+    }, (maxDuration * 1000 / 0.8) + 5000); // Adjust for playbackRate of 0.8
     
     // Clean up the timeout when recording stops
     mediaRecorder.onstop = () => {
