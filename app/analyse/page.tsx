@@ -364,11 +364,11 @@ export default function VideoCapturePage() {
             // Calculate trim range with guardrails
             // UPDATED: Adjusted timing to ensure we capture more before and after impact
             let startTime = Math.max(0, effectiveImpactTime - 4); // Changed from 5 to 4 seconds before impact
-            let endTime = Math.min(effectiveImpactTime + 2, finalDuration); // Changed from 1.5 to 2 seconds after impact
+            let endTime = Math.min(effectiveImpactTime + 3, finalDuration); // 3 seconds after impact
 
             // Ensure we have a valid range (at least 0.5 seconds)
-            if (startTime >= endTime || endTime - startTime < 0.5) {
-              if (finalDuration < 0.5) {
+            if (startTime >= endTime || endTime - startTime < 1.0) {
+              if (finalDuration < 1.0) {
                 // Video too short, use full video
                 console.log(
                   'Video too short for meaningful trim, using full video'
@@ -383,7 +383,7 @@ export default function VideoCapturePage() {
               // Adjust for a valid range
               console.log('Adjusting for valid trim range');
               startTime = 0;
-              endTime = Math.min(finalDuration, 2); // Changed from 1.5 to 2 seconds
+              endTime = Math.min(finalDuration, 7);
             }
 
             console.log(
@@ -857,7 +857,7 @@ export default function VideoCapturePage() {
               } catch (err) {
                 // Ignore cleanup errors
               }
-            }, 2500);
+            }, 5000);
 
             return;
           }
