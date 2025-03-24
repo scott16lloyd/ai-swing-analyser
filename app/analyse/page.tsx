@@ -16,13 +16,11 @@ import {
   Scissors,
 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
-import {
-  VideoUploadButton,
-  ProcessVideoResponse,
-} from '@/components/ui/upload-button';
+import { ProcessVideoResponse } from '@/components/ui/upload-button';
 import Image from 'next/image';
 import golfSwingImage from '../public/face-on-golf-swing-soloute.png';
 import { useRouter } from 'next/navigation';
+import { EnhancedVideoUploadButton } from '@/components/ui/enhanced-video-upload-button';
 
 declare global {
   interface Window {
@@ -1142,11 +1140,10 @@ export default function VideoCapturePage() {
               recordedVideoBlob ? (
                 // If we have a recorded video, show controls for it
                 <>
-                  <VideoUploadButton
+                  <EnhancedVideoUploadButton
                     videoBlob={trimmedVideoBlob || recordedVideoBlob}
                     cameraFacing={cameraFacing}
                     onProcessingComplete={handleProcessingComplete}
-                    useDirectUpload={true}
                     uploadOptions={{
                       destinationPath: 'unprocessed_video/user',
                       quality: 'high',

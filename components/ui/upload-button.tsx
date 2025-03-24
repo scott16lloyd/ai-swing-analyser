@@ -3,7 +3,7 @@
 import { useState, useRef } from 'react';
 import { useToast } from '@/hooks/use-toast';
 
-interface ProcessVideoOptions {
+export interface ProcessVideoOptions {
   cameraFacing?: 'user' | 'environment' | string;
   quality?: 'high' | 'medium' | 'low';
   bucketName?: string;
