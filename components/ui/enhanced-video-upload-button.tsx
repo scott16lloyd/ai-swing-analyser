@@ -2,11 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useToast } from '@/hooks/use-toast';
-import {
-  uploadVideoDirectly,
-  ProcessVideoResponse,
-  ProcessVideoOptions,
-} from '@/components/ui/upload-button';
+import { uploadVideoDirectly } from '@/components/ui/upload-button';
 import {
   Upload,
   Settings,
@@ -16,6 +12,13 @@ import {
   CheckCircle,
   X,
 } from 'lucide-react';
+
+// Video compression options interface
+interface CompressVideoOptions {
+  quality?: string;
+  onProgress?: (progress: number) => void;
+  maxDuration?: number;
+}
 
 interface EnhancedVideoUploadProps {
   videoBlob: Blob | null;
@@ -60,6 +63,30 @@ interface QualityPreset {
   frameRate: number;
 }
 
+interface ProcessVideoOptions {
+  cameraFacing?: 'user' | 'environment' | string;
+  quality?: 'high' | 'medium' | 'low';
+  bucketName?: string;
+  destinationPath?: string;
+  onProgress?: (progress: number) => void;
+}
+
+/**
+ * Response from processing video
+ */
+interface ProcessVideoResponse {
+  success: boolean;
+  bucketName: string;
+  fileName: string;
+  publicUrl?: string;
+  metadata: {
+    originalName: string;
+    quality: string;
+    processingMethod: string;
+    [key: string]: any;
+  };
+}
+
 // Quality presets for video compression
 const QUALITY_PRESETS: Record<string, QualityPreset | null> = {
   'very-low': {
@@ -88,6 +115,44 @@ const QUALITY_PRESETS: Record<string, QualityPreset | null> = {
   },
   original: null, // No compression
 };
+
+/**
+ * Detects if the current device is a mobile device
+ * @returns {boolean} True if the device is mobile
+ */
+function isMobileDevice(): boolean {
+  // Check for mobile or tablet devices
+  return (
+    /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
+      navigator.userAgent
+    ) ||
+    (navigator.maxTouchPoints !== undefined && navigator.maxTouchPoints > 2)
+  );
+}
+
+/**
+ * Returns the best supported video format for MediaRecorder
+ * @returns {string} The MIME type to use for video recording
+ */
+function getBestSupportedMimeType(): string {
+  const types: string[] = [
+    'video/mp4;codecs=h264',
+    'video/webm;codecs=h264',
+    'video/webm;codecs=vp9',
+    'video/webm;codecs=vp8',
+    'video/webm',
+  ];
+
+  for (const type of types) {
+    if (MediaRecorder.isTypeSupported(type)) {
+      console.log(`Using MIME type: ${type}`);
+      return type;
+    }
+  }
+
+  console.warn('No preferred MIME types supported, using default');
+  return 'video/webm';
+}
 
 /**
  * Detects current network conditions and recommends compression settings
@@ -165,29 +230,6 @@ function detectNetworkConditions(): NetworkInfoState {
 }
 
 /**
- * Returns the best supported video format for MediaRecorder
- */
-function getBestSupportedMimeType(): string {
-  const types = [
-    'video/mp4;codecs=h264',
-    'video/webm;codecs=h264',
-    'video/webm;codecs=vp9',
-    'video/webm;codecs=vp8',
-    'video/webm',
-  ];
-
-  for (const type of types) {
-    if (MediaRecorder.isTypeSupported(type)) {
-      console.log(`Using MIME type: ${type}`);
-      return type;
-    }
-  }
-
-  console.warn('No preferred MIME types supported, using default');
-  return 'video/webm';
-}
-
-/**
  * Utility function to read basic video information without loading the full video
  */
 async function getVideoInfo(videoBlob: Blob): Promise<VideoInfo> {
@@ -238,20 +280,21 @@ async function getVideoInfo(videoBlob: Blob): Promise<VideoInfo> {
 
 /**
  * Compresses a video blob to a lower quality for faster uploads
+ * with mobile-specific optimizations
+ * @param {Blob} videoBlob - The original video blob to compress
+ * @param {CompressVideoOptions} options - Compression options
+ * @returns {Promise<Blob>} A promise that resolves to the compressed video blob
  */
 async function compressVideo(
   videoBlob: Blob,
-  options: {
-    quality?: string;
-    onProgress?: (progress: number) => void;
-    maxDuration?: number;
-  } = {}
+  options: CompressVideoOptions = {}
 ): Promise<Blob> {
   // Default options
   const {
     quality = 'medium',
-    onProgress = (progress: number) =>
-      console.log(`Compression progress: ${progress}%`),
+    onProgress = (progress: number): void => {
+      console.log(`Compression progress: ${progress}%`);
+    },
     maxDuration = 15, // Default max duration
   } = options;
 
@@ -263,178 +306,240 @@ async function compressVideo(
     return videoBlob;
   }
 
+  // Check if we're on a mobile device
+  const isMobile: boolean = isMobileDevice();
+  console.log(`Device detected as: ${isMobile ? 'mobile' : 'desktop'}`);
+
   // Get quality settings
-  const settings = QUALITY_PRESETS[quality] || QUALITY_PRESETS.medium;
+  const settings: QualityPreset | null =
+    QUALITY_PRESETS[quality] || QUALITY_PRESETS.medium;
+
+  // If no settings (null), return original
   if (!settings) {
     console.warn('Invalid quality setting, using medium quality');
     return compressVideo(videoBlob, { ...options, quality: 'medium' });
   }
 
+  // Add a compression timeout to prevent stalling
+  const compressionTimeoutMs: number = isMobile ? 30000 : 60000; // 30 seconds on mobile, 60 on desktop
+  let compressionTimeout: number | null = null;
+
+  // Mobile-specific adjustments
+  if (isMobile) {
+    console.log('Using mobile-optimized compression settings');
+
+    // Reduce frame rate significantly for mobile
+    settings.frameRate = Math.min(settings.frameRate, 15);
+
+    // Make mobile compression less resource-intensive - reduce bitrate for faster processing
+    settings.bitrate = Math.floor(settings.bitrate * 0.7);
+
+    // For very low-end devices, try to handle with even simpler settings
+    if (navigator.hardwareConcurrency && navigator.hardwareConcurrency <= 4) {
+      console.log('Low CPU device detected, using minimal settings');
+      settings.frameRate = 10;
+      settings.bitrate = Math.floor(settings.bitrate * 0.6);
+    }
+  }
+
   console.log('Using compression settings:', settings);
 
-  // Create a video element to load the original video
-  const sourceVideo = document.createElement('video');
-  sourceVideo.muted = true;
-  sourceVideo.playsInline = true;
+  // Try compression with timeout safeguard
+  return new Promise<Blob>((resolve, reject) => {
+    // Set timeout to catch stalled compression
+    compressionTimeout = window.setTimeout(() => {
+      console.warn(
+        `Compression timed out after ${compressionTimeoutMs}ms, using original video`
+      );
+      onProgress(100);
+      resolve(videoBlob); // Fallback to original if compression stalls
+    }, compressionTimeoutMs);
 
-  try {
-    // Create URL for the video blob
-    const videoUrl = URL.createObjectURL(videoBlob);
-    sourceVideo.src = videoUrl;
+    // Attempt compression
+    performCompression()
+      .then((compressedBlob) => {
+        if (compressionTimeout !== null) {
+          clearTimeout(compressionTimeout);
+        }
+        resolve(compressedBlob);
+      })
+      .catch((error) => {
+        console.error('Compression failed:', error);
+        if (compressionTimeout !== null) {
+          clearTimeout(compressionTimeout);
+        }
 
-    // Wait for metadata to load
-    await new Promise<void>((resolve, reject) => {
-      let timeoutId: number | null = null;
+        // Important: don't reject, but resolve with original blob as fallback
+        console.warn('Using original video due to compression failure');
+        onProgress(100);
+        resolve(videoBlob);
+      });
+  });
 
-      sourceVideo.onloadedmetadata = () => {
-        if (timeoutId) clearTimeout(timeoutId);
-        resolve();
-      };
+  // Internal function to perform the actual compression
+  async function performCompression(): Promise<Blob> {
+    // Create a video element to load the original video
+    const sourceVideo: HTMLVideoElement = document.createElement('video');
+    sourceVideo.muted = true;
+    sourceVideo.playsInline = true;
 
-      sourceVideo.onerror = (event) => {
-        if (timeoutId) clearTimeout(timeoutId);
-        reject(
-          new Error(
-            `Error loading video: ${sourceVideo.error?.message || 'Unknown error'}`
-          )
+    try {
+      // Create URL for the video blob
+      const videoUrl: string = URL.createObjectURL(videoBlob);
+      sourceVideo.src = videoUrl;
+
+      // Wait for metadata to load
+      await new Promise<void>((resolve, reject) => {
+        let timeoutId: number | null = null;
+
+        sourceVideo.onloadedmetadata = () => {
+          if (timeoutId) clearTimeout(timeoutId);
+          resolve();
+        };
+
+        sourceVideo.onerror = () => {
+          if (timeoutId) clearTimeout(timeoutId);
+          reject(
+            new Error(
+              `Error loading video: ${sourceVideo.error?.message || 'Unknown error'}`
+            )
+          );
+        };
+
+        // Set a timeout in case metadata loading hangs
+        timeoutId = window.setTimeout(() => {
+          reject(new Error('Timeout loading video metadata'));
+        }, 5000);
+      });
+
+      // Video dimensions and duration
+      const originalWidth: number = sourceVideo.videoWidth;
+      const originalHeight: number = sourceVideo.videoHeight;
+      const originalDuration: number = sourceVideo.duration;
+      const duration: number = Math.min(originalDuration, maxDuration);
+
+      console.log('Original video:', {
+        width: originalWidth,
+        height: originalHeight,
+        duration: originalDuration.toFixed(2) + 's',
+        size: (videoBlob.size / (1024 * 1024)).toFixed(2) + 'MB',
+      });
+
+      // If we're on a mobile device and the video is already small enough, skip compression
+      const videoSizeMB: number = videoBlob.size / (1024 * 1024);
+      if (isMobile && videoSizeMB < 10) {
+        // Skip compression for videos under 10MB on mobile
+        console.log(
+          'Video already small enough, skipping compression on mobile'
         );
+        onProgress(100);
+        URL.revokeObjectURL(videoUrl);
+        return videoBlob;
+      }
+
+      // Calculate target dimensions while maintaining aspect ratio
+      const aspectRatio: number = originalWidth / originalHeight;
+
+      // If the video is portrait, swap width and height in our calculations
+      let targetWidth: number;
+      let targetHeight: number;
+
+      if (originalHeight > originalWidth) {
+        // Portrait video
+        targetHeight = settings!.width;
+        targetWidth = Math.round(settings!.width / aspectRatio);
+      } else {
+        // Landscape video
+        targetWidth = settings!.width;
+        targetHeight = Math.round(settings!.width / aspectRatio);
+      }
+
+      // Ensure dimensions are even (required by some encoders)
+      targetWidth = Math.floor(targetWidth / 2) * 2;
+      targetHeight = Math.floor(targetHeight / 2) * 2;
+
+      console.log('Target dimensions:', targetWidth, 'x', targetHeight);
+
+      // Mobile specific: If we have createImageBitmap support, use it for better performance
+      const useImageBitmap: boolean = typeof createImageBitmap === 'function';
+
+      // Create a canvas for the compressed video frames
+      const canvas: HTMLCanvasElement = document.createElement('canvas');
+      canvas.width = targetWidth;
+      canvas.height = targetHeight;
+      const ctx: CanvasRenderingContext2D | null = canvas.getContext('2d', {
+        alpha: false,
+      });
+
+      if (!ctx) {
+        throw new Error('Failed to get 2D context from canvas');
+      }
+
+      // Get the best supported MIME type
+      const mimeType: string = getBestSupportedMimeType();
+
+      // Set up parameters for MediaRecorder
+      const recorderOptions: MediaRecorderOptions = {
+        mimeType,
+        videoBitsPerSecond: settings!.bitrate,
       };
 
-      // Set a timeout in case metadata loading hangs
-      timeoutId = window.setTimeout(() => {
-        reject(new Error('Timeout loading video metadata'));
-      }, 5000);
-    });
+      // Create a MediaRecorder with the canvas stream
+      // @ts-ignore - TypeScript doesn't fully recognize captureStream
+      const stream: MediaStream = canvas.captureStream(settings.frameRate);
+      const mediaRecorder: MediaRecorder = new MediaRecorder(
+        stream,
+        recorderOptions
+      );
 
-    // Get the video dimensions and duration
-    const originalWidth = sourceVideo.videoWidth;
-    const originalHeight = sourceVideo.videoHeight;
-    const originalDuration = sourceVideo.duration;
-
-    console.log('Original video:', {
-      width: originalWidth,
-      height: originalHeight,
-      duration: originalDuration.toFixed(2) + 's',
-      size: (videoBlob.size / (1024 * 1024)).toFixed(2) + 'MB',
-    });
-
-    // Calculate target dimensions while maintaining aspect ratio
-    const aspectRatio = originalWidth / originalHeight;
-
-    // If the video is portrait, swap width and height in our calculations
-    let targetWidth: number;
-    let targetHeight: number;
-
-    if (originalHeight > originalWidth) {
-      // Portrait video
-      targetHeight = settings.width;
-      targetWidth = Math.round(settings.width / aspectRatio);
-    } else {
-      // Landscape video
-      targetWidth = settings.width;
-      targetHeight = Math.round(settings.width / aspectRatio);
-    }
-
-    // Ensure dimensions are even (required by some encoders)
-    targetWidth = Math.floor(targetWidth / 2) * 2;
-    targetHeight = Math.floor(targetHeight / 2) * 2;
-
-    console.log('Target dimensions:', targetWidth, 'x', targetHeight);
-
-    // Create a canvas for the compressed video frames
-    const canvas = document.createElement('canvas');
-    canvas.width = targetWidth;
-    canvas.height = targetHeight;
-    const ctx = canvas.getContext('2d', { alpha: false });
-
-    if (!ctx) {
-      throw new Error('Failed to get 2D context from canvas');
-    }
-
-    // Get the best supported MIME type
-    const mimeType = getBestSupportedMimeType();
-
-    // Set up parameters for MediaRecorder
-    const recorderOptions: MediaRecorderOptions = {
-      mimeType,
-      videoBitsPerSecond: settings.bitrate,
-    };
-
-    // Create a MediaRecorder with the canvas stream
-    // @ts-ignore - TypeScript doesn't fully recognize captureStream
-    const stream = canvas.captureStream(settings.frameRate);
-    const mediaRecorder = new MediaRecorder(stream, recorderOptions);
-
-    // Store the recorded chunks
-    const chunks: Blob[] = [];
-    mediaRecorder.ondataavailable = (e) => {
-      if (e.data.size > 0) {
-        chunks.push(e.data);
-      }
-    };
-
-    // Start recording
-    mediaRecorder.start(1000); // Capture in 1-second chunks
-
-    // Calculate actual duration to process (respecting maxDuration)
-    const duration = Math.min(originalDuration, maxDuration);
-    console.log(`Processing ${duration.toFixed(2)}s of video`);
-
-    // Track frame count for progress updates
-    let processedFrames = 0;
-    const totalFrames = Math.ceil(duration * settings.frameRate);
-
-    // Disable image smoothing for faster rendering
-    ctx.imageSmoothingQuality = 'low';
-
-    // Process video frames
-    return new Promise<Blob>((resolve, reject) => {
-      // Set up completion handling
-      mediaRecorder.onstop = () => {
-        try {
-          // Create final compressed video blob
-          const compressedBlob = new Blob(chunks, { type: mimeType });
-
-          console.log('Compression complete:', {
-            originalSize: (videoBlob.size / (1024 * 1024)).toFixed(2) + 'MB',
-            compressedSize:
-              (compressedBlob.size / (1024 * 1024)).toFixed(2) + 'MB',
-            reductionPercent:
-              Math.round((1 - compressedBlob.size / videoBlob.size) * 100) +
-              '%',
-          });
-
-          // Clean up
-          URL.revokeObjectURL(sourceVideo.src);
-          onProgress(100);
-          resolve(compressedBlob);
-        } catch (error) {
-          console.error('Error creating compressed video:', error);
-          reject(error);
+      // Store the recorded chunks
+      const chunks: Blob[] = [];
+      mediaRecorder.ondataavailable = (e: BlobEvent): void => {
+        if (e.data.size > 0) {
+          chunks.push(e.data);
         }
       };
 
+      // Start recording
+      mediaRecorder.start(1000); // Capture in 1-second chunks
+
+      // Optimize for mobile: process fewer frames on mobile
+      // On desktop we process at full frameRate, on mobile we process fewer frames
+      const frameSkip: number = isMobile
+        ? Math.max(1, Math.floor(30 / settings!.frameRate))
+        : 1;
+      console.log(`Processing with frame skip: ${frameSkip}`);
+
+      // Calculate actual number of frames to process (considering frameSkip)
+      const totalFrames: number = Math.ceil(
+        (duration * settings!.frameRate) / frameSkip
+      );
+      let processedFrames: number = 0;
+
+      // Disable image smoothing for faster rendering
+      ctx.imageSmoothingQuality = 'low';
+
       // Set up error handling
-      mediaRecorder.onerror = (event) => {
+      mediaRecorder.onerror = (event: Event): void => {
         console.error('MediaRecorder error:', event);
-        reject(new Error('Error during video compression'));
+        throw new Error('Error during video compression');
       };
 
       // Function to draw a frame at the specified time
-      const drawFrameAtTime = (time: number) => {
+      const drawFrameAtTime = (time: number): void => {
         try {
           // Draw the current frame to canvas
           ctx.drawImage(sourceVideo, 0, 0, targetWidth, targetHeight);
 
           // Update progress
           processedFrames++;
-          const progress = Math.min(
+          const progress: number = Math.min(
             95,
             Math.round((processedFrames / totalFrames) * 100)
           );
 
-          // Only update progress every few frames to avoid excessive UI updates
-          if (processedFrames % 5 === 0) {
+          // Update progress every few frames to avoid excessive UI updates
+          if (processedFrames % (isMobile ? 3 : 5) === 0) {
             onProgress(progress);
           }
 
@@ -445,11 +550,14 @@ async function compressVideo(
             return;
           }
 
-          // Otherwise, move to next frame
-          sourceVideo.currentTime = Math.min(
-            time + 1 / settings.frameRate,
+          // Otherwise, move to next frame with a dynamic frame skip based on device
+          const nextTime: number = Math.min(
+            time + frameSkip / settings!.frameRate,
             duration
           );
+
+          // Set the next currentTime
+          sourceVideo.currentTime = nextTime;
         } catch (error) {
           console.error('Error drawing frame:', error);
           // Try to continue despite errors
@@ -457,25 +565,81 @@ async function compressVideo(
       };
 
       // Handle seeking to a specific time
-      sourceVideo.onseeked = () => {
+      sourceVideo.onseeked = (): void => {
         // Get current time and process the frame
-        const currentTime = sourceVideo.currentTime;
+        const currentTime: number = sourceVideo.currentTime;
         drawFrameAtTime(currentTime);
       };
 
-      // Handle errors
-      sourceVideo.onerror = (error) => {
-        console.error('Video error during compression:', error);
-        reject(new Error('Error processing video for compression'));
+      // Handle errors - use a compatible type for the error handler
+      sourceVideo.onerror = function (
+        this: HTMLVideoElement,
+        ev: Event | string
+      ): any {
+        console.error('Video error during compression:', ev);
+        throw new Error('Error processing video for compression');
       };
 
-      // Start the process by seeking to the beginning
-      sourceVideo.currentTime = 0;
-    });
-  } catch (error) {
-    console.error('Video compression failed:', error);
-    // If compression fails, return the original
-    return videoBlob;
+      // For mobile, we need to monitor if the seeking is actually progressing
+      if (isMobile) {
+        let lastSeekTime: number = 0;
+        let seekStallCount: number = 0;
+
+        // Check every 2 seconds if seeking is making progress
+        const seekMonitorInterval: number = window.setInterval(() => {
+          const currentTime: number = sourceVideo.currentTime;
+
+          // If time hasn't advanced significantly, increment stall counter
+          if (Math.abs(currentTime - lastSeekTime) < 0.1) {
+            seekStallCount++;
+            console.warn(`Possible seek stall detected: ${seekStallCount}`);
+
+            // After 3 stalls, force progress or abort
+            if (seekStallCount >= 3) {
+              clearInterval(seekMonitorInterval);
+
+              // Force progress update to avoid appearing stuck
+              onProgress(
+                Math.min(95, processedFrames ? processedFrames * 10 : 50)
+              );
+
+              // Force stop recording and return whatever we have
+              if (mediaRecorder.state !== 'inactive') {
+                console.warn('Forcing mediaRecorder to stop due to seek stall');
+                mediaRecorder.stop();
+              }
+            }
+          } else {
+            // Reset stall counter if we're making progress
+            seekStallCount = 0;
+            lastSeekTime = currentTime;
+          }
+        }, 2000);
+
+        // Clean up monitor when mediaRecorder stops
+        mediaRecorder.onstop = (): void => {
+          clearInterval(seekMonitorInterval);
+        };
+      }
+
+      // Wait for compression to complete (this will be resolved by mediaRecorder.onstop)
+      return new Promise<Blob>((resolve) => {
+        mediaRecorder.onstop = (): void => {
+          const compressedBlob: Blob = new Blob(chunks, { type: mimeType });
+          onProgress(100);
+          URL.revokeObjectURL(videoUrl);
+          resolve(compressedBlob);
+        };
+
+        // Start the process by seeking to the beginning
+        sourceVideo.currentTime = 0;
+      });
+    } catch (error) {
+      console.error('Video compression failed:', error);
+      // If compression fails, return the original
+      onProgress(100);
+      return videoBlob;
+    }
   }
 }
 
@@ -556,7 +720,7 @@ export function EnhancedVideoUploadButton({
     return selectedQuality === 'auto' ? autoQuality : selectedQuality;
   };
 
-  function checkCompressionSupport(): boolean {
+  function checkCompressionSupport() {
     const checks = {
       mediaRecorder: typeof MediaRecorder !== 'undefined',
       canvas:
@@ -572,7 +736,8 @@ export function EnhancedVideoUploadButton({
     return Object.values(checks).every(Boolean);
   }
 
-  const handleProcessVideo = async (): Promise<void> => {
+  // Handler for the process button click
+  const handleProcessVideoClick = async (): Promise<void> => {
     if (!videoBlob) {
       toast({
         title: 'Error',
@@ -584,72 +749,100 @@ export function EnhancedVideoUploadButton({
 
     setUploading(true);
     setProgress(0);
+    setProgressStage('compressing');
+    setCompressionStats(null);
 
     try {
-      // Log device info for debugging
-      console.log('Device info:', {
-        userAgent: navigator.userAgent,
-        platform: navigator.platform,
-        isMobile:
-          /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
-            navigator.userAgent
-          ),
+      // Determine which quality to use
+      const effectiveQuality: string = getEffectiveQuality();
+
+      // On mobile devices, consider using a lower quality or original
+      const isMobile: boolean = isMobileDevice();
+      const videoSize: number = videoBlob.size / (1024 * 1024); // Size in MB
+
+      // For small videos on mobile, skip compression altogether
+      let skipCompression: boolean = false;
+      if (isMobile && videoSize < 5) {
+        // Skip for videos under 5MB on mobile
+        skipCompression = true;
+        console.log('Small video on mobile device, skipping compression');
+      }
+
+      // Show initial toast
+      toast({
+        title: 'Processing Video',
+        description:
+          skipCompression || effectiveQuality === 'original'
+            ? 'Preparing for upload...'
+            : `Compressing video (${effectiveQuality} quality)...`,
       });
 
-      // Determine effective quality
-      const effectiveQuality = getEffectiveQuality();
-
-      // Check if we should attempt compression
-      const shouldCompress = effectiveQuality !== 'original';
-      const canCompress = checkCompressionSupport();
-
-      // Log compression decision
-      console.log('Compression decision:', {
-        shouldCompress,
-        canCompress,
-        selectedQuality: effectiveQuality,
-      });
-
-      // Skip compression if not supported or not needed
-      let processedBlob = videoBlob;
+      // Compress the video if not using original quality and not skipping compression
+      let processedBlob: Blob = videoBlob;
       let compressionResult: CompressionStats | null = null;
 
-      if (shouldCompress && canCompress) {
-        // Show compression toast
-        setProgressStage('compressing');
-        toast({
-          title: 'Processing Video',
-          description: `Compressing video (${effectiveQuality} quality)...`,
-        });
-
+      if (!skipCompression && effectiveQuality !== 'original') {
+        console.log(`Compressing video with ${effectiveQuality} quality`);
         try {
-          processedBlob = await compressVideo(videoBlob, {
+          // Add compression timeout to prevent UI from appearing stuck
+          const compressionPromise: Promise<Blob> = compressVideo(videoBlob, {
             quality: effectiveQuality,
-            onProgress: (compressionProgress) => {
+            onProgress: (compressionProgress: number): void => {
               setProgress(compressionProgress);
             },
           });
 
-          // Calculate compression stats
-          const originalSize = videoBlob.size / (1024 * 1024);
-          const compressedSize = processedBlob.size / (1024 * 1024);
-          const reduction = (1 - compressedSize / originalSize) * 100;
+          // Race against a timeout for mobile devices
+          const timeoutPromise: Promise<Blob> = new Promise<Blob>((resolve) => {
+            const timeout: number = isMobile ? 45000 : 120000; // 45 seconds on mobile, 2 minutes on desktop
+            setTimeout(() => {
+              console.warn(`Compression timed out after ${timeout}ms`);
+              setProgress(100);
+              resolve(videoBlob); // Use original if timeout
+            }, timeout);
+          });
 
-          compressionResult = {
-            originalSize: originalSize.toFixed(2) + ' MB',
-            compressedSize: compressedSize.toFixed(2) + ' MB',
-            reduction: reduction.toFixed(1) + '%',
-          };
+          // Use whichever resolves first
+          processedBlob = await Promise.race([
+            compressionPromise,
+            timeoutPromise,
+          ]);
 
-          setCompressionStats(compressionResult);
+          // If we got the original blob back due to timeout, show a message
+          if (
+            processedBlob === videoBlob &&
+            processedBlob.size === videoBlob.size
+          ) {
+            console.log(
+              'Using original video due to compression timeout or failure'
+            );
+            toast({
+              title: 'Compression Skipped',
+              description: 'Using original video for upload',
+              variant: 'default',
+            });
+          } else {
+            // Calculate compression stats
+            const originalSize: number = videoBlob.size / (1024 * 1024);
+            const compressedSize: number = processedBlob.size / (1024 * 1024);
+            const reduction: number = (1 - compressedSize / originalSize) * 100;
 
-          // Only show success toast if there was meaningful compression
-          if (reduction > 5) {
+            compressionResult = {
+              originalSize: originalSize.toFixed(2) + ' MB',
+              compressedSize: compressedSize.toFixed(2) + ' MB',
+              reduction: reduction.toFixed(1) + '%',
+            };
+
+            setCompressionStats(compressionResult);
+
+            // Update toast with compression result
             toast({
               title: 'Video Compressed',
               description: `Reduced from ${originalSize.toFixed(1)}MB to ${compressedSize.toFixed(1)}MB (${reduction.toFixed(0)}% smaller)`,
               variant: 'default',
             });
+
+            console.log('Compression complete:', compressionResult);
           }
         } catch (error) {
           console.error('Compression failed:', error);
@@ -661,61 +854,33 @@ export function EnhancedVideoUploadButton({
           // Fall back to original video
           processedBlob = videoBlob;
         }
-      } else if (shouldCompress && !canCompress) {
-        // Inform user compression was skipped
-        toast({
-          title: 'Compression Skipped',
-          description:
-            "Your device doesn't support video compression, using original quality",
-          variant: 'default',
-        });
-      } else {
-        toast({
-          title: 'Using Original Quality',
-          description: 'Preparing for upload...',
-        });
+      } else if (skipCompression) {
+        // Just update progress for skipped compression
+        setProgress(100);
+        console.log('Compression skipped, using original video');
       }
 
       // Now upload the processed blob
       setProgressStage('uploading');
       setProgress(0);
 
-      // Create a simpler progress handler that's more reliable
-      let lastProgressUpdate = Date.now();
-      const stableProgressHandler = (progress: number): void => {
-        // Throttle updates to prevent UI thrashing
-        const now = Date.now();
-        if (now - lastProgressUpdate > 200) {
-          setProgress(progress);
-          lastProgressUpdate = now;
+      toast({
+        title: 'Uploading',
+        description: compressionResult
+          ? `Uploading compressed video (${compressionResult.compressedSize})`
+          : 'Uploading original video...',
+      });
+
+      // Use the uploadVideoDirectly function
+      const result: ProcessVideoResponse = await uploadVideoDirectly(
+        processedBlob,
+        {
+          cameraFacing,
+          quality: effectiveQuality as any, // Convert to your accepted quality types
+          onProgress: updateProgress,
+          ...uploadOptions,
         }
-      };
-
-      // Log pre-upload info
-      console.log('Starting upload with:', {
-        blobType: processedBlob.type,
-        blobSize: processedBlob.size,
-        quality: effectiveQuality,
-      });
-
-      // Use your existing uploadVideoDirectly function with timeout handling
-      const uploadPromise = uploadVideoDirectly(processedBlob, {
-        cameraFacing,
-        quality: effectiveQuality as 'high' | 'medium' | 'low', // Type cast to match expected values
-        onProgress: stableProgressHandler,
-        ...uploadOptions,
-      });
-
-      // Create a timeout to detect stalled uploads
-      const timeoutPromise = new Promise<ProcessVideoResponse>((_, reject) => {
-        setTimeout(
-          () => reject(new Error('Upload timed out after 60 seconds')),
-          60000
-        );
-      });
-
-      // Race the upload against the timeout
-      const result = await Promise.race([uploadPromise, timeoutPromise]);
+      );
 
       toast({
         title: 'Success',
@@ -728,14 +893,6 @@ export function EnhancedVideoUploadButton({
       }
     } catch (error) {
       console.error('Upload failed:', error);
-
-      // Get more detailed error info
-      const errorDetails =
-        error instanceof Error
-          ? { message: error.message, stack: error.stack }
-          : { message: 'Unknown error', error };
-
-      console.error('Error details:', errorDetails);
 
       toast({
         title: 'Upload Failed',
@@ -808,7 +965,7 @@ export function EnhancedVideoUploadButton({
       <div className="flex items-center gap-2">
         <button
           className={`flex-1 px-4 py-2 bg-blue-500 text-white rounded-md disabled:opacity-50 ${className}`}
-          onClick={handleProcessVideo}
+          onClick={handleProcessVideoClick}
           disabled={uploading || !videoBlob || disabled}
         >
           {uploading
