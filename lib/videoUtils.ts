@@ -154,7 +154,7 @@ async function mobileTrimVideoHighQuality(
   const mediaRecorder = new MediaRecorder(canvasStream, {
     mimeType: mimeType,
     // INCREASED bitrate for higher quality
-    videoBitsPerSecond: 8000000, // Increased to 8Mbps for better quality
+    videoBitsPerSecond: 8000000,
   });
   
   const chunks: Blob[] = [];
@@ -278,8 +278,6 @@ async function mobileTrimVideoHighQuality(
     sourceVideo.onseeked = () => {
       console.log(`Successfully seeked to ${sourceVideo.currentTime.toFixed(2)}s`);
       
-      // ADDED playbackRate reduction for more precise frame capture in critical moments
-      sourceVideo.playbackRate = 0.8; // Slow down playback to ensure we don't miss frames
       
       sourceVideo.play()
         .then(() => {

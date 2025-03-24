@@ -262,8 +262,7 @@ function SwingAnalysisContent() {
               </p>
               {pollingAttempt > 3 && (
                 <p className="text-gray-500 mt-2 max-w-md mx-auto text-sm">
-                  This usually takes 1-2 minutes. We'll notify you as soon as
-                  it's ready!
+                  This usually takes . We'll notify you as soon as it's ready!
                 </p>
               )}
             </div>

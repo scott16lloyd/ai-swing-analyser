@@ -857,7 +857,7 @@ export default function VideoCapturePage() {
               } catch (err) {
                 // Ignore cleanup errors
               }
-            }, 4000);
+            }, 2500);
 
             return;
           }
