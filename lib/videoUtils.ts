@@ -154,7 +154,7 @@ async function mobileTrimVideoHighQuality(
   const mediaRecorder = new MediaRecorder(canvasStream, {
     mimeType: mimeType,
     // INCREASED bitrate for higher quality
-    videoBitsPerSecond: 2000000,
+    videoBitsPerSecond: 8000000, // Increased to 8Mbps for better quality
   });
   
   const chunks: Blob[] = [];
@@ -203,14 +203,10 @@ async function mobileTrimVideoHighQuality(
       reject(error);
       return;
     }
-
-    const totalDuration = endTime - startTime;
     
     // Safety timeout - stop after 30 seconds or if duration is too long
     // INCREASED buffer time to ensure we capture all frames
-    const safetyDuration = Math.min(30, totalDuration * 3);
-    console.log(`Setting safety timeout for ${safetyDuration}s (3x requested duration)`);
-
+    const maxDuration = Math.min(30, endTime - startTime);
     const safetyTimeout = setTimeout(() => {
       if (mediaRecorder.state !== 'inactive') {
         console.log('Safety timeout reached, stopping recorder');
@@ -220,11 +216,11 @@ async function mobileTrimVideoHighQuality(
           console.error('Error stopping recorder:', e);
         }
       }
-    }, (safetyDuration * 1000) + 5000); // Add 5 seconds buffer
+    }, (maxDuration * 1000) + 5000); // Add 5 seconds buffer
     
     // Seek to start position with a slight buffer before the intended start
     // ADDED a small offset to ensure we start before the actual start time
-    const seekTime = Math.max(0, startTime - 0.3);
+    const seekTime = Math.max(0, startTime - 0.1);
     console.log(`Seeking to ${seekTime}s (with 0.1s buffer before requested ${startTime}s)`);
     sourceVideo.currentTime = seekTime;
     
@@ -244,7 +240,7 @@ async function mobileTrimVideoHighQuality(
       }
       
       // IMPROVED end time detection with additional buffer to ensure we include the impact moment
-      if (sourceVideo.currentTime >= endTime + 1.0) { // Added 1s buffer after end time
+      if (sourceVideo.currentTime >= endTime + 0.2) { // Added 0.2s buffer after end time
         // We've reached the end, stop recording
         console.log(`Reached end time ${sourceVideo.currentTime}s > ${endTime}s, stopping recorder`);
         clearTimeout(safetyTimeout);
@@ -282,8 +278,9 @@ async function mobileTrimVideoHighQuality(
     sourceVideo.onseeked = () => {
       console.log(`Successfully seeked to ${sourceVideo.currentTime.toFixed(2)}s`);
       
-      sourceVideo.playbackRate = 0.8;
-
+      // ADDED playbackRate reduction for more precise frame capture in critical moments
+      sourceVideo.playbackRate = 0.8; // Slow down playback to ensure we don't miss frames
+      
       sourceVideo.play()
         .then(() => {
           console.log('Video playback started, beginning frame processing');
@@ -500,38 +497,9 @@ async function tryAlternativeSafariApproach(
   // Simple fallback implementation for Safari
   console.log('Trying alternative approach for Safari');
   
-  try {
-    // For Safari, we'll use a different strategy:
-    // 1. Create a temporary video element
-    // 2. Set up a MediaRecorder with the screen capture API if available
-    // 3. If that fails, try to return a portion of the original video
-    
-    // If Web Audio API is available, try to use it for trimming
-    if (window.AudioContext || (window as any).webkitAudioContext) {
-      console.log('Web Audio API available, attempting audio-based trim');
-      
-      // Calculate trim duration
-      const duration = endTime - startTime;
-      console.log(`Trim duration: ${duration}s from ${startTime}s to ${endTime}s`);
-      
-      // If the duration is very short, extend it
-      const minDuration = Math.max(6, duration);
-      const adjustedEndTime = startTime + minDuration;
-      
-      console.log(`Using adjusted end time: ${adjustedEndTime}s to ensure minimum ${minDuration}s duration`);
-      
-      // Return original blob with logging
-      console.log('Safari fallback: returning original video but logging the issue');
-      return videoBlob;
-    }
-    
-    console.log('Safari fallback: returning original video as last resort');
-    return videoBlob;
-  } catch (error) {
-    console.error('Error in Safari alternative approach:', error);
-    // Return original as last resort
-    return videoBlob;
-  }
+  // We return the original blob as a last resort
+  console.log('Alternative approach: returning original blob as fallback');
+  return videoBlob;
 }
 
 /**
