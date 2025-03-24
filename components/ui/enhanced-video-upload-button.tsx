@@ -452,7 +452,8 @@ async function simpleCompress(
     }
 
     // Scale dimensions
-    let targetWidth, targetHeight;
+    let targetWidth: number;
+    let targetHeight: number;
     if (originalHeight > originalWidth) {
       // Portrait video
       targetHeight = settings.width;
