@@ -556,8 +556,23 @@ export function EnhancedVideoUploadButton({
     return selectedQuality === 'auto' ? autoQuality : selectedQuality;
   };
 
-  // Handle compression and upload
-  const handleProcessVideo = async () => {
+  function checkCompressionSupport(): boolean {
+    const checks = {
+      mediaRecorder: typeof MediaRecorder !== 'undefined',
+      canvas:
+        typeof document.createElement('canvas').getContext('2d') !==
+        'undefined',
+      captureStream:
+        typeof document.createElement('canvas').captureStream === 'function',
+      videoElement:
+        typeof document.createElement('video').canPlayType === 'function',
+    };
+
+    console.log('Compression support checks:', checks);
+    return Object.values(checks).every(Boolean);
+  }
+
+  const handleProcessVideo = async (): Promise<void> => {
     if (!videoBlob) {
       toast({
         title: 'Error',
@@ -569,28 +584,44 @@ export function EnhancedVideoUploadButton({
 
     setUploading(true);
     setProgress(0);
-    setProgressStage('compressing');
-    setCompressionStats(null);
 
     try {
-      // Determine which quality to use
-      const effectiveQuality = getEffectiveQuality();
-
-      // Show initial toast
-      toast({
-        title: 'Processing Video',
-        description:
-          effectiveQuality === 'original'
-            ? 'Preparing for upload...'
-            : `Compressing video (${effectiveQuality} quality)...`,
+      // Log device info for debugging
+      console.log('Device info:', {
+        userAgent: navigator.userAgent,
+        platform: navigator.platform,
+        isMobile:
+          /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
+            navigator.userAgent
+          ),
       });
 
-      // Compress the video if not using original quality
+      // Determine effective quality
+      const effectiveQuality = getEffectiveQuality();
+
+      // Check if we should attempt compression
+      const shouldCompress = effectiveQuality !== 'original';
+      const canCompress = checkCompressionSupport();
+
+      // Log compression decision
+      console.log('Compression decision:', {
+        shouldCompress,
+        canCompress,
+        selectedQuality: effectiveQuality,
+      });
+
+      // Skip compression if not supported or not needed
       let processedBlob = videoBlob;
       let compressionResult: CompressionStats | null = null;
 
-      if (effectiveQuality !== 'original') {
-        console.log(`Compressing video with ${effectiveQuality} quality`);
+      if (shouldCompress && canCompress) {
+        // Show compression toast
+        setProgressStage('compressing');
+        toast({
+          title: 'Processing Video',
+          description: `Compressing video (${effectiveQuality} quality)...`,
+        });
+
         try {
           processedBlob = await compressVideo(videoBlob, {
             quality: effectiveQuality,
@@ -612,14 +643,14 @@ export function EnhancedVideoUploadButton({
 
           setCompressionStats(compressionResult);
 
-          // Update toast with compression result
-          toast({
-            title: 'Video Compressed',
-            description: `Reduced from ${originalSize.toFixed(1)}MB to ${compressedSize.toFixed(1)}MB (${reduction.toFixed(0)}% smaller)`,
-            variant: 'default',
-          });
-
-          console.log('Compression complete:', compressionResult);
+          // Only show success toast if there was meaningful compression
+          if (reduction > 5) {
+            toast({
+              title: 'Video Compressed',
+              description: `Reduced from ${originalSize.toFixed(1)}MB to ${compressedSize.toFixed(1)}MB (${reduction.toFixed(0)}% smaller)`,
+              variant: 'default',
+            });
+          }
         } catch (error) {
           console.error('Compression failed:', error);
           toast({
@@ -630,26 +661,61 @@ export function EnhancedVideoUploadButton({
           // Fall back to original video
           processedBlob = videoBlob;
         }
+      } else if (shouldCompress && !canCompress) {
+        // Inform user compression was skipped
+        toast({
+          title: 'Compression Skipped',
+          description:
+            "Your device doesn't support video compression, using original quality",
+          variant: 'default',
+        });
+      } else {
+        toast({
+          title: 'Using Original Quality',
+          description: 'Preparing for upload...',
+        });
       }
 
       // Now upload the processed blob
       setProgressStage('uploading');
       setProgress(0);
 
-      toast({
-        title: 'Uploading',
-        description: compressionResult
-          ? `Uploading compressed video (${compressionResult.compressedSize})`
-          : 'Uploading original video...',
+      // Create a simpler progress handler that's more reliable
+      let lastProgressUpdate = Date.now();
+      const stableProgressHandler = (progress: number): void => {
+        // Throttle updates to prevent UI thrashing
+        const now = Date.now();
+        if (now - lastProgressUpdate > 200) {
+          setProgress(progress);
+          lastProgressUpdate = now;
+        }
+      };
+
+      // Log pre-upload info
+      console.log('Starting upload with:', {
+        blobType: processedBlob.type,
+        blobSize: processedBlob.size,
+        quality: effectiveQuality,
       });
 
-      // Use your existing uploadVideoDirectly function
-      const result = await uploadVideoDirectly(processedBlob, {
+      // Use your existing uploadVideoDirectly function with timeout handling
+      const uploadPromise = uploadVideoDirectly(processedBlob, {
         cameraFacing,
-        quality: effectiveQuality as any, // Convert to your accepted quality types
-        onProgress: updateProgress,
+        quality: effectiveQuality as 'high' | 'medium' | 'low', // Type cast to match expected values
+        onProgress: stableProgressHandler,
         ...uploadOptions,
       });
+
+      // Create a timeout to detect stalled uploads
+      const timeoutPromise = new Promise<ProcessVideoResponse>((_, reject) => {
+        setTimeout(
+          () => reject(new Error('Upload timed out after 60 seconds')),
+          60000
+        );
+      });
+
+      // Race the upload against the timeout
+      const result = await Promise.race([uploadPromise, timeoutPromise]);
 
       toast({
         title: 'Success',
@@ -662,6 +728,14 @@ export function EnhancedVideoUploadButton({
       }
     } catch (error) {
       console.error('Upload failed:', error);
+
+      // Get more detailed error info
+      const errorDetails =
+        error instanceof Error
+          ? { message: error.message, stack: error.stack }
+          : { message: 'Unknown error', error };
+
+      console.error('Error details:', errorDetails);
 
       toast({
         title: 'Upload Failed',
