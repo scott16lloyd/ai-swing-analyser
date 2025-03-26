@@ -5,6 +5,7 @@ import {
   getSupportedMimeType,
   formatDuration,
   getVideoDuration,
+  getBestVideoFormat,
 } from '@/lib/videoUtils';
 import { useState, useRef, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
@@ -235,10 +236,20 @@ export default function VideoCapturePage() {
     }, 1000);
   };
 
+  /**
+   * This function should replace your startRecording function in VideoCapturePage.tsx
+   */
   const startRecording = () => {
     setRecordingDuration(0);
     chunksRef.current = [];
     startTimeRef.current = Date.now();
+    currentDurationRef.current = 0;
+
+    // Clear any existing impact time
+    setImpactTimeLabel(null);
+    window.lastImpactTime = undefined;
+    lastImpactTimeRef.current = null;
+    globalImpactTime = null;
 
     if (!streamRef.current) {
       console.error('No stream available for recording');
@@ -246,15 +257,15 @@ export default function VideoCapturePage() {
     }
 
     try {
-      // Try to use better codec options when available
-      const mimeType = getSupportedMimeType();
-      console.log('Starting recording with MIME type:', mimeType);
+      // Get the best supported format
+      const { mimeType, extension } = getBestVideoFormat();
+      console.log(`Starting recording with format: ${mimeType} (${extension})`);
 
-      // Set higher bitrate for better quality
+      // Set appropriate options for better quality and compatibility
       const options: MediaRecorderOptions = {
         mimeType,
-        videoBitsPerSecond: 5000000,
-        audioBitsPerSecond: 128000,
+        videoBitsPerSecond: 5000000, // 5 Mbps
+        audioBitsPerSecond: 128000, // 128 kbps
       };
 
       const mediaRecorder = new MediaRecorder(streamRef.current, options);
@@ -266,218 +277,41 @@ export default function VideoCapturePage() {
         }
       };
 
-      // This should replace the code in your mediaRecorder.onstop handler
-      // inside the startRecording function
-
-      // In the VideoCapturePage.tsx file, update the mediaRecorder.onstop handler
-      // This section is where the error is occurring
-
-      // Replace your mediaRecorder.onstop handler with this version
-      // This approach gets the actual duration from the video file itself
-
-      // This is the updated mediaRecorder.onstop handler from the VideoCapturePage.tsx file
-
-      mediaRecorder.onstop = async () => {
-        if (recordingTimerRef.current) {
-          clearInterval(recordingTimerRef.current);
-        }
-
-        // Clean up audio analysis
-        stopImpactDetection();
-
-        // Set isProcessing to true first, before any video processing
-        setIsProcessing(true);
-
-        // Create a new blob with the correct MIME type
-        const fullVideoBlob = new Blob(chunksRef.current, { type: mimeType });
-        console.log(
-          `Recording stopped. Full video size: ${fullVideoBlob.size} bytes`
-        );
-
-        try {
-          // Get the actual video duration by loading it into a video element
-          const actualDuration = await getVideoDuration(fullVideoBlob);
-          console.log(`Actual video duration from file: ${actualDuration}s`);
-          console.log(
-            `Tracked duration: ref=${currentDurationRef.current}s, state=${recordingDuration}s`
-          );
-
-          // Use the maximum of tracked duration or actual duration to ensure we have something valid
-          const finalDuration = Math.max(
-            currentDurationRef.current,
-            actualDuration
-          );
-          console.log(`Using final duration: ${finalDuration}s`);
-
-          // Get the impact time from state or window global
-          const storedImpactTime =
-            impactTimeLabel ||
-            window.lastImpactTime ||
-            lastImpactTimeRef.current;
-          console.log(
-            `Checking for impact time: Global=${globalImpactTime}, State=${impactTimeLabel}, Ref=${lastImpactTimeRef.current}`
-          );
-
-          // If we have an impact time, trim the video around that time
-          if (storedImpactTime) {
-            console.log(`Using impact time: ${storedImpactTime}`);
-            // Convert impact time label back to seconds
-            const impactTimeParts = storedImpactTime.split(':');
-            const minutes = parseInt(impactTimeParts[0]);
-            const seconds = parseFloat(impactTimeParts[1]);
-            const impactTimeInSeconds = minutes * 60 + seconds;
-
-            console.log(
-              `Impact time in seconds: ${impactTimeInSeconds}, Total recording duration: ${finalDuration}s`
-            );
-
-            // If video is very short or impact time is invalid, just show the full video
-            if (finalDuration < 1 || impactTimeInSeconds < 0) {
-              console.log(
-                'Video too short or invalid impact time, using full video'
-              );
-              setRecordedVideoBlob(fullVideoBlob);
-              setTrimmedVideoBlob(null);
-              setIsProcessing(false);
-              prepareVideoForPlayback(fullVideoBlob);
-
-              toast({
-                title: 'Video Processing',
-                description:
-                  'Video is too short to trim, showing full recording',
-                variant: 'default',
-              });
-              return;
-            }
-
-            // If impact time is greater than duration, cap it
-            let effectiveImpactTime = impactTimeInSeconds;
-            if (impactTimeInSeconds > finalDuration) {
-              console.warn(
-                `Impact time ${impactTimeInSeconds}s exceeds video duration ${finalDuration}s`
-              );
-              // Place impact at 75% of the video
-              effectiveImpactTime = finalDuration * 0.75;
-              console.log(`Adjusted impact time to ${effectiveImpactTime}s`);
-            }
-
-            // Calculate trim range with guardrails
-            // UPDATED: Adjusted timing to ensure we capture more before and after impact
-            let startTime = Math.max(0, effectiveImpactTime - 4); // Changed from 5 to 4 seconds before impact
-            let endTime = Math.min(effectiveImpactTime + 2, finalDuration); // Changed from 1.5 to 2 seconds after impact
-
-            // Ensure we have a valid range (at least 0.5 seconds)
-            if (startTime >= endTime || endTime - startTime < 0.5) {
-              if (finalDuration < 0.5) {
-                // Video too short, use full video
-                console.log(
-                  'Video too short for meaningful trim, using full video'
-                );
-                setRecordedVideoBlob(fullVideoBlob);
-                setTrimmedVideoBlob(null);
-                setIsProcessing(false);
-                prepareVideoForPlayback(fullVideoBlob);
-                return;
-              }
-
-              // Adjust for a valid range
-              console.log('Adjusting for valid trim range');
-              startTime = 0;
-              endTime = Math.min(finalDuration, 2); // Changed from 1.5 to 2 seconds
-            }
-
-            console.log(
-              `Trimming video from ${startTime}s to ${endTime}s (impact at ${effectiveImpactTime}s)`
-            );
-
-            try {
-              // Store full video first
-              setRecordedVideoBlob(fullVideoBlob);
-
-              // Attempt trimming
-              const trimmedBlob = await trimVideoByTimeRange(
-                fullVideoBlob,
-                startTime,
-                endTime
-              );
-
-              console.log(
-                'Trimmed video created successfully:',
-                trimmedBlob.size,
-                'bytes'
-              );
-
-              // Set trimmed blob and update UI
-              setTrimmedVideoBlob(trimmedBlob);
-              setIsProcessing(false);
-              prepareVideoForPlayback(trimmedBlob);
-
-              toast({
-                title: 'Video Processed',
-                description: `Auto-trimmed around ${storedImpactTime === impactTimeLabel ? 'detected impact' : 'approximate impact point'}`,
-                variant: 'default',
-              });
-            } catch (error) {
-              console.error('Error trimming video:', error);
-              // Fallback to full video
-              setRecordedVideoBlob(fullVideoBlob);
-              setTrimmedVideoBlob(null);
-              setIsProcessing(false);
-              prepareVideoForPlayback(fullVideoBlob);
-
-              toast({
-                title: 'Trimming Failed',
-                description: 'Using the full video instead',
-                variant: 'destructive',
-              });
-            }
-          } else {
-            // No impact detected, use full video
-            console.log('No impact detected, using full video');
-            setRecordedVideoBlob(fullVideoBlob);
-            setTrimmedVideoBlob(null);
-            setIsProcessing(false);
-            prepareVideoForPlayback(fullVideoBlob);
-          }
-        } catch (error) {
-          console.error('Error processing video:', error);
-          // Fallback to full video
-          setRecordedVideoBlob(fullVideoBlob);
-          setTrimmedVideoBlob(null);
-          setIsProcessing(false);
-          prepareVideoForPlayback(fullVideoBlob);
-
-          toast({
-            title: 'Processing Error',
-            description: 'There was an error processing the video',
-            variant: 'destructive',
-          });
-        }
-      };
-
       // Request data more frequently for smoother recording
+      // Avoid large data gaps if something goes wrong
       mediaRecorder.start(500);
-      const isRecordingRef = { current: true };
       setIsRecording(true);
 
-      // Update the timer based on elapsed time since recording started
+      // Update the timer and duration reference based on elapsed time
       recordingTimerRef.current = setInterval(() => {
-        const elapsedSeconds = Math.floor(
-          (Date.now() - startTimeRef.current) / 1000
-        );
+        const elapsedSeconds = (Date.now() - startTimeRef.current) / 1000;
         setRecordingDuration(elapsedSeconds);
-      }, 500);
+        currentDurationRef.current = elapsedSeconds;
+      }, 200); // Update more frequently
 
-      // Then start impact detection immediately using the ref's value
-      const startDetection = () => {
-        console.log('Starting impact detection, isRecording is true');
-        startImpactDetectionDirect();
-      };
+      // Start listening for impact
+      setTimeout(() => {
+        if (isRecording) {
+          console.log('Starting impact detection');
+          startImpactDetectionDirect();
+        }
+      }, 100);
 
-      // Finally update the state, which happens asynchronously
-      setIsRecording(true);
-      // Give a short delay to ensure all is initialized
-      setTimeout(startDetection, 100);
+      // Set a maximum recording time (30 seconds) to prevent very large files
+      const maxRecordingTimeout = setTimeout(() => {
+        if (
+          mediaRecorderRef.current &&
+          mediaRecorderRef.current.state !== 'inactive'
+        ) {
+          console.log(
+            'Maximum recording time reached (30s), stopping recorder'
+          );
+          stopRecording();
+        }
+      }, 30000); // 30 seconds max
+
+      // Store the timeout so we can clear it if recording is stopped manually
+      autoStopTimeoutRef.current = maxRecordingTimeout;
     } catch (err) {
       console.error('Error starting recording:', err);
       toast({
@@ -486,6 +320,32 @@ export default function VideoCapturePage() {
         variant: 'destructive',
       });
     }
+  };
+
+  /**
+   * Improved impact detection store function
+   */
+  const storeImpactTime = (impactTimeSeconds: number): void => {
+    // Format the impact time
+    const formattedTime = formatDuration(impactTimeSeconds);
+
+    // Store impact time in multiple places for redundancy
+    // 1. React state (might be delayed due to state updates)
+    setImpactTimeLabel(formattedTime);
+
+    // 2. Global variable (immediate access)
+    globalImpactTime = formattedTime;
+
+    // 3. Window object (accessible across components)
+    window.lastImpactTime = formattedTime;
+
+    // 4. Ref (persists between renders)
+    lastImpactTimeRef.current = formattedTime;
+
+    // 5. Also update current duration reference
+    currentDurationRef.current = impactTimeSeconds;
+
+    console.log(`Impact detected at ${formattedTime} (${impactTimeSeconds}s)`);
   };
 
   const startImpactDetectionDirect = (): void => {
