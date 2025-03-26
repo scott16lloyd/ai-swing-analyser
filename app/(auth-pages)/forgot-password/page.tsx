@@ -6,7 +6,6 @@ import { Label } from '@/components/ui/label';
 import Link from 'next/link';
 import { SmtpMessage } from '../smtp-message';
 
-// @ts-ignore - Temporarily ignore TypeScript errors until we resolve the type issue
 export default function ForgotPassword({
   searchParams,
 }: {
