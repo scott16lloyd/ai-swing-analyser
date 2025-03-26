@@ -525,46 +525,61 @@ export const getSupportedMimeType = (): string => {
 };
 
 /**
- * Prepares a video element for playback with a blob
- * @param videoElement The video element reference
- * @param blob The video blob to play
+ * Prepares a video for playback with improved error handling
+ * @param blobToPlay The video blob to play
+ * @returns The created blob URL or undefined if preparation failed
  */
-export const prepareVideoForPlayback = (
-  videoElement: HTMLVideoElement | null,
-  blob: Blob
-): void => {
-  if (!videoElement) return;
+export const prepareVideoForPlayback = (blobToPlay: Blob): string | undefined => {
+  if (!blobToPlay || blobToPlay.size === 0) {
+    console.error('Invalid blob provided for playback');
+    return undefined;
+  }
+
+  console.log(`Preparing video for playback, blob size: ${blobToPlay.size} bytes, type: ${blobToPlay.type}`);
   
-  console.log(`Preparing video for playback, blob size: ${blob.size} bytes`);
+  // Create an appropriate blob URL for this video
+  let finalBlob = blobToPlay;
   
-  // Create a new object URL to avoid potential caching issues
-  const url = URL.createObjectURL(blob);
-  
-  // Clear any existing blob URLs first
-  if (videoElement.src && videoElement.src.startsWith('blob:')) {
-    URL.revokeObjectURL(videoElement.src);
+  // If the blob doesn't have a valid video MIME type, create a new one with the correct type
+  if (!blobToPlay.type.includes('video/')) {
+    const format = getBestVideoFormat();
+    console.log(`Converting blob to ${format.mimeType} for better compatibility`);
+    finalBlob = new Blob([blobToPlay], { type: format.mimeType });
   }
   
-  // Set the source to the new blob URL
-  videoElement.src = url;
+  // Now create blob URL for the prepared video
+  const blobUrl = URL.createObjectURL(finalBlob);
   
-  // Wait for the video to load metadata before trying to play
-  videoElement.onloadedmetadata = () => {
-    console.log(`Video metadata loaded. Duration: ${videoElement.duration}s`);
-    // Reset the playback position to the start
-    videoElement.currentTime = 0;
-  };
+  // Find preview video elements in DOM
+  const videoElements = document.querySelectorAll('video');
+  let previewFound = false;
   
-  // Wait for the video to be ready to play
-  videoElement.oncanplay = () => {
-    console.log('Video can play, starting playback');
-    videoElement.play()
-      .then(() => console.log('Playback started successfully'))
-      .catch(err => console.error('Error starting playback:', err));
-  };
+  // Use Array.from to convert NodeList to Array for iteration
+  Array.from(videoElements).forEach(videoElement => {
+    // Skip hidden video elements (like the recording source)
+    if (videoElement.className.includes('hidden')) return;
+    
+    // Clean up any existing blob URLs
+    if (videoElement.src && videoElement.src.startsWith('blob:')) {
+      URL.revokeObjectURL(videoElement.src);
+    }
+    
+    // Update the video source
+    videoElement.src = blobUrl;
+    videoElement.load();
+    
+    // Mark that we found at least one preview element
+    previewFound = true;
+  });
   
-  // Force a reload to apply the new source
-  videoElement.load();
+  if (!previewFound) {
+    console.warn('No visible video elements found for playback');
+    URL.revokeObjectURL(blobUrl);
+    return undefined;
+  }
+  
+  // Return the blob URL in case it needs to be used elsewhere
+  return blobUrl;
 };
 
 /**
@@ -586,9 +601,28 @@ export const formatDuration = (seconds: number): string => {
 */
 export const getVideoDuration = (videoBlob: Blob): Promise<number> => {
   return new Promise((resolve, reject) => {
+    if (!videoBlob || videoBlob.size === 0) {
+      console.error('Invalid video blob provided to getVideoDuration');
+      reject(new Error('Invalid video blob'));
+      return;
+    }
+
     // Create a temporary video element
     const tempVideo = document.createElement('video');
+    tempVideo.preload = 'metadata';
+    tempVideo.playsInline = true;
+    tempVideo.muted = true;
+    
+    // Create blob URL
     const url = URL.createObjectURL(videoBlob);
+    
+    // Ensure we clean up resources
+    const cleanup = () => {
+      URL.revokeObjectURL(url);
+      if (tempVideo.parentNode) {
+        tempVideo.parentNode.removeChild(tempVideo);
+      }
+    };
     
     // Set up event listeners
     tempVideo.onloadedmetadata = () => {
@@ -597,66 +631,81 @@ export const getVideoDuration = (videoBlob: Blob): Promise<number> => {
       console.log(`Video metadata loaded, duration: ${duration}s`);
       
       // Clean up
-      URL.revokeObjectURL(url);
+      cleanup();
       
       // If we got a valid duration, resolve with it
       if (duration && isFinite(duration) && duration > 0) {
         resolve(duration);
       } else {
-        console.warn(`Invalid duration detected: ${duration}, using fallback`);
+        console.warn(`Invalid or zero duration detected: ${duration}, using fallback`);
         // Fallback to a reasonable estimate based on file size
-        // A very rough estimate: assume 1MB ≈ 1 second of video at moderate quality
-        const estimatedDuration = videoBlob.size / (1024 * 1024);
-        resolve(Math.max(estimatedDuration, 1)); // At least 1 second
+        const estimatedDuration = Math.max(videoBlob.size / (1024 * 1024), 1);
+        resolve(estimatedDuration);
       }
     };
     
     tempVideo.onerror = (error) => {
       console.error('Error loading video to get duration:', error);
-      URL.revokeObjectURL(url);
+      cleanup();
       
-      // Fallback to a size-based estimate
-      const estimatedDuration = videoBlob.size / (1024 * 1024);
-      console.log(`Using fallback duration estimate: ${estimatedDuration}s`);
-      resolve(Math.max(estimatedDuration, 1)); // At least 1 second
+      // Reject with error
+      reject(new Error('Failed to load video metadata'));
     };
     
     // Add a safety timeout
     const timeout = setTimeout(() => {
       console.warn('Duration detection timed out');
-      URL.revokeObjectURL(url);
+      cleanup();
       
       // Fallback to a size-based estimate
-      const estimatedDuration = videoBlob.size / (1024 * 1024);
+      const estimatedDuration = Math.max(videoBlob.size / (1024 * 1024), 1);
       console.log(`Using fallback duration estimate after timeout: ${estimatedDuration}s`);
-      resolve(Math.max(estimatedDuration, 1)); // At least 1 second
+      resolve(estimatedDuration);
     }, 3000); // 3 second timeout
     
     // Start loading the video
     tempVideo.src = url;
-    tempVideo.preload = 'metadata';
     
-    // When metadata is loaded, it will trigger onloadedmetadata
-    tempVideo.load();
-    
-    // Clear timeout if metadata loads normally
-    tempVideo.onloadedmetadata = () => {
+    // Clear timeout when metadata loads
+    const originalOnLoadedMetadata = tempVideo.onloadedmetadata;
+    tempVideo.onloadedmetadata = (event) => {
       clearTimeout(timeout);
-      const duration = tempVideo.duration;
-      console.log(`Video metadata loaded, duration: ${duration}s`);
-      
-      // Clean up
-      URL.revokeObjectURL(url);
-      
-      // If we got a valid duration, resolve with it
-      if (duration && isFinite(duration) && duration > 0) {
-        resolve(duration);
-      } else {
-        console.warn(`Invalid duration detected: ${duration}, using fallback`);
-        // Fallback to a reasonable estimate based on file size
-        const estimatedDuration = videoBlob.size / (1024 * 1024);
-        resolve(Math.max(estimatedDuration, 1)); // At least 1 second
+      if (originalOnLoadedMetadata) {
+        originalOnLoadedMetadata.call(tempVideo, event);
       }
     };
+    
+    // Force loading
+    tempVideo.load();
+    
+    // Add to DOM temporarily (helps on some browsers)
+    tempVideo.style.display = 'none';
+    document.body.appendChild(tempVideo);
   });
+};
+
+export const getBestVideoFormat = (): { mimeType: string, extension: string } => {
+  // Test for MP4 support first, as it's more widely supported
+  if (MediaRecorder.isTypeSupported('video/mp4') || 
+      MediaRecorder.isTypeSupported('video/mp4;codecs=h264')) {
+    return { mimeType: 'video/mp4;codecs=h264', extension: 'mp4' };
+  }
+  
+  // Next try WebM with H.264
+  if (MediaRecorder.isTypeSupported('video/webm;codecs=h264')) {
+    return { mimeType: 'video/webm;codecs=h264', extension: 'webm' };
+  }
+  
+  // Next try WebM with VP9
+  if (MediaRecorder.isTypeSupported('video/webm;codecs=vp9')) {
+    return { mimeType: 'video/webm;codecs=vp9', extension: 'webm' };
+  }
+  
+  // Fallback to WebM with VP8
+  if (MediaRecorder.isTypeSupported('video/webm;codecs=vp8,opus')) {
+    return { mimeType: 'video/webm;codecs=vp8,opus', extension: 'webm' };
+  }
+  
+  // Basic WebM as final fallback
+  return { mimeType: 'video/webm', extension: 'webm' };
 };
