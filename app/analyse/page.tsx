@@ -237,9 +237,9 @@ export default function VideoCapturePage() {
   };
 
   /**
-   * This function should replace your startRecording function in VideoCapturePage.tsx
+   * Start recording video with improved format detection and error handling
    */
-  const startRecording = () => {
+  const startRecording = (): void => {
     setRecordingDuration(0);
     chunksRef.current = [];
     startTimeRef.current = Date.now();
@@ -253,81 +253,147 @@ export default function VideoCapturePage() {
 
     if (!streamRef.current) {
       console.error('No stream available for recording');
+      toast({
+        title: 'Error',
+        description:
+          'No camera stream available. Please allow camera access and try again.',
+        variant: 'destructive',
+      });
       return;
     }
 
     try {
       // Get the best supported format
       const { mimeType, extension } = getBestVideoFormat();
-      console.log(`Starting recording with format: ${mimeType} (${extension})`);
+      console.log(
+        `Starting recording with format: ${mimeType || 'browser default'} (${extension})`
+      );
 
       // Set appropriate options for better quality and compatibility
-      const options: MediaRecorderOptions = {
-        mimeType,
-        videoBitsPerSecond: 5000000, // 5 Mbps
-        audioBitsPerSecond: 128000, // 128 kbps
-      };
+      const options: MediaRecorderOptions = {};
 
-      const mediaRecorder = new MediaRecorder(streamRef.current, options);
-      mediaRecorderRef.current = mediaRecorder;
+      // Only set mimeType if one was found and supported
+      if (mimeType) {
+        options.mimeType = mimeType;
+      }
 
-      mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          chunksRef.current.push(event.data);
-        }
-      };
+      try {
+        const mediaRecorder = new MediaRecorder(streamRef.current, options);
+        mediaRecorderRef.current = mediaRecorder;
 
-      // Request data more frequently for smoother recording
-      // Avoid large data gaps if something goes wrong
-      mediaRecorder.start(500);
-      setIsRecording(true);
+        mediaRecorder.ondataavailable = (event: BlobEvent): void => {
+          if (event.data.size > 0) {
+            chunksRef.current.push(event.data);
+          }
+        };
 
-      // Update the timer and duration reference based on elapsed time
-      recordingTimerRef.current = setInterval(() => {
-        const elapsedSeconds = (Date.now() - startTimeRef.current) / 1000;
-        setRecordingDuration(elapsedSeconds);
-        currentDurationRef.current = elapsedSeconds;
-      }, 200); // Update more frequently
+        // When recording stops, create the final video blob
+        mediaRecorder.onstop = (): void => {
+          if (chunksRef.current.length === 0) {
+            console.error('No data collected during recording');
+            toast({
+              title: 'Error',
+              description: 'No video data was recorded. Please try again.',
+              variant: 'destructive',
+            });
+            return;
+          }
 
-      // Start listening for impact
-      setTimeout(() => {
-        if (isRecording) {
-          console.log('Starting impact detection');
-          startImpactDetectionDirect();
-        }
-      }, 100);
+          // Determine the type to use for the blob (use the same format we recorded with)
+          const blobType: string = mimeType || 'video/webm';
 
-      // Set a maximum recording time (30 seconds) to prevent very large files
-      const maxRecordingTimeout = setTimeout(() => {
-        if (
-          mediaRecorderRef.current &&
-          mediaRecorderRef.current.state !== 'inactive'
-        ) {
-          console.log(
-            'Maximum recording time reached (30s), stopping recorder'
-          );
-          stopRecording();
-        }
-      }, 30000); // 30 seconds max
+          try {
+            const recordedBlob: Blob = new Blob(chunksRef.current, {
+              type: blobType,
+            });
+            setRecordedVideoBlob(recordedBlob);
+            console.log(
+              `Recording completed: ${recordedBlob.size} bytes, type: ${blobType}`
+            );
 
-      // Store the timeout so we can clear it if recording is stopped manually
-      autoStopTimeoutRef.current = maxRecordingTimeout;
+            // Use impact time for potential trimming later
+            if (lastImpactTimeRef.current) {
+              console.log(
+                `Recording stopped with impact at ${lastImpactTimeRef.current}`
+              );
+              // Optionally trigger automatic trimming here
+            }
+          } catch (error) {
+            console.error('Error creating video blob:', error);
+            toast({
+              title: 'Error',
+              description: 'Failed to process recorded video.',
+              variant: 'destructive',
+            });
+          }
+
+          // Clear recording timer
+          if (recordingTimerRef.current) {
+            clearInterval(recordingTimerRef.current);
+          }
+        };
+
+        // Request data more frequently for smoother recording
+        mediaRecorder.start(500);
+        setIsRecording(true);
+
+        // Update the timer and duration reference based on elapsed time
+        recordingTimerRef.current = setInterval(() => {
+          const elapsedSeconds: number =
+            (Date.now() - startTimeRef.current) / 1000;
+          setRecordingDuration(elapsedSeconds);
+          currentDurationRef.current = elapsedSeconds;
+        }, 200);
+
+        // Start listening for impact
+        setTimeout(() => {
+          if (isRecording) {
+            console.log('Starting impact detection');
+            startImpactDetectionSimple(); // Use our simplified version
+          }
+        }, 100);
+
+        // Set a maximum recording time (30 seconds) to prevent very large files
+        const maxRecordingTimeout: NodeJS.Timeout = setTimeout(() => {
+          if (
+            mediaRecorderRef.current &&
+            mediaRecorderRef.current.state !== 'inactive'
+          ) {
+            console.log(
+              'Maximum recording time reached (30s), stopping recorder'
+            );
+            stopRecording();
+          }
+        }, 30000); // 30 seconds max
+
+        // Store the timeout so we can clear it if recording is stopped manually
+        autoStopTimeoutRef.current = maxRecordingTimeout;
+      } catch (err) {
+        console.error('Error creating MediaRecorder:', err);
+        toast({
+          title: 'Recording Error',
+          description:
+            'Your browser does not support video recording with the available formats. Please try using Chrome or Firefox.',
+          variant: 'destructive',
+        });
+      }
     } catch (err) {
       console.error('Error starting recording:', err);
       toast({
         title: 'Error',
-        description: 'Failed to start recording. Please try again.',
+        description:
+          'Failed to start recording. Please check your browser permissions and try again.',
         variant: 'destructive',
       });
     }
   };
 
   /**
-   * Improved impact detection store function
+   * Helper function to store impact time in multiple places for redundancy
    */
   const storeImpactTime = (impactTimeSeconds: number): void => {
     // Format the impact time
-    const formattedTime = formatDuration(impactTimeSeconds);
+    const formattedTime: string = formatDuration(impactTimeSeconds);
 
     // Store impact time in multiple places for redundancy
     // 1. React state (might be delayed due to state updates)
@@ -348,8 +414,11 @@ export default function VideoCapturePage() {
     console.log(`Impact detected at ${formattedTime} (${impactTimeSeconds}s)`);
   };
 
-  const startImpactDetectionDirect = (): void => {
-    console.log('Starting direct impact detection');
+  /**
+   * A simpler sound detection implementation for golf swing impact
+   */
+  const startImpactDetectionSimple = (): void => {
+    console.log('Starting simplified impact detection');
 
     if (!streamRef.current) {
       console.error('No stream available for impact detection');
@@ -359,35 +428,6 @@ export default function VideoCapturePage() {
     try {
       console.log('🎤 Starting sound detection...');
 
-      // Add a visible debug div
-      const debugDiv: HTMLDivElement = document.createElement('div');
-      debugDiv.style.position = 'absolute';
-      debugDiv.style.top = '70px';
-      debugDiv.style.left = '10px';
-      debugDiv.style.backgroundColor = 'rgba(0,0,0,0.7)';
-      debugDiv.style.color = 'white';
-      debugDiv.style.padding = '10px';
-      debugDiv.style.zIndex = '1000';
-      debugDiv.innerText = 'Starting sound detection...';
-      document.body.appendChild(debugDiv);
-
-      // Create a level meter
-      const meterDiv: HTMLDivElement = document.createElement('div');
-      meterDiv.style.position = 'absolute';
-      meterDiv.style.top = '110px';
-      meterDiv.style.left = '10px';
-      meterDiv.style.right = '10px';
-      meterDiv.style.height = '20px';
-      meterDiv.style.backgroundColor = '#333';
-      meterDiv.style.zIndex = '1000';
-
-      const levelIndicator: HTMLDivElement = document.createElement('div');
-      levelIndicator.style.height = '100%';
-      levelIndicator.style.width = '0%';
-      levelIndicator.style.backgroundColor = 'green';
-      meterDiv.appendChild(levelIndicator);
-      document.body.appendChild(meterDiv);
-
       // Create a simple audio context
       const AudioContextClass: typeof AudioContext =
         window.AudioContext ||
@@ -395,7 +435,6 @@ export default function VideoCapturePage() {
 
       if (!AudioContextClass) {
         console.error('AudioContext not supported');
-        debugDiv.innerText = 'Error: AudioContext not supported';
         return;
       }
 
@@ -408,196 +447,76 @@ export default function VideoCapturePage() {
 
       if (audioTracks.length === 0) {
         console.error('No audio tracks in stream');
-        debugDiv.innerText = 'Error: No audio tracks found';
+        toast({
+          title: 'Warning',
+          description: "No microphone detected. Sound detection won't work.",
+          variant: 'destructive',
+        });
         return;
       }
-
-      console.log(`Using audio track: ${audioTracks[0].label}`);
-      debugDiv.innerText = `Found audio: ${audioTracks[0].label}`;
 
       // Create audio source
       const source: MediaStreamAudioSourceNode =
         audioContext.createMediaStreamSource(streamRef.current);
 
-      // Create analyzer node for frequency analysis - still useful but less strict
+      // Create analyzer node
       const analyzer: AnalyserNode = audioContext.createAnalyser();
       analyzer.fftSize = 2048;
       source.connect(analyzer);
 
-      // Create a script processor for direct access to audio data
-      const processor: ScriptProcessorNode = audioContext.createScriptProcessor(
-        2048,
-        1,
-        1
-      );
-      source.connect(processor);
-      processor.connect(audioContext.destination);
+      // Create data array for analysis
+      const dataArray: Uint8Array = new Uint8Array(analyzer.frequencyBinCount);
 
-      // BALANCED PARAMETERS WITH SLIGHTLY REDUCED SENSITIVITY
-      const CALIBRATION_FRAMES: number = 45; // Medium-length calibration (45 frames)
-      const VOLUME_HISTORY_SIZE: number = 15; // Medium history size
-      const IMMEDIATE_HISTORY_SIZE: number = 5;
-
-      // Frequency analysis for golf driver impact (slightly narrower range)
-      const LOW_FREQ: number = 1900; // Adjusted from 1800 Hz
-      const HIGH_FREQ: number = 5200; // Adjusted from 5500 Hz
-
-      // These values will be adjusted during calibration
+      // Variables for sound detection
+      const CALIBRATION_FRAMES: number = 20;
+      const BASELINE_FRAMES: number = 20; // Added missing constant
       let baselineVolume: number = 0;
-      let baselineFrequencyProfile: number[] = new Array(
-        analyzer.frequencyBinCount
-      ).fill(0);
       let calibrationFrames: number = 0;
-      let threshold: number = 0.05; // Starting threshold
-      let maxVolume: number = 0;
+      let threshold: number = 0.05;
       let isPeaking: boolean = false;
       let peakTime: number = 0;
-      let consecutiveFramesAboveThreshold: number = 0;
-      const REQUIRED_CONSECUTIVE_FRAMES: number = 1; // More sensitive - only require 1 frame
 
-      // Track volume over time for better detection
-      const volumeHistory: number[] = new Array(VOLUME_HISTORY_SIZE).fill(0);
-      const immediateHistory: number[] = new Array(IMMEDIATE_HISTORY_SIZE).fill(
-        0
-      );
-
-      // Frequency data arrays
-      const frequencyData: Uint8Array = new Uint8Array(
-        analyzer.frequencyBinCount
-      );
-
-      // Function to calculate volume (RMS) from audio data
-      const calculateVolume = (input: Float32Array): number => {
-        let sum: number = 0;
-        for (let i: number = 0; i < input.length; i++) {
-          sum += input[i] * input[i];
-        }
-        return Math.sqrt(sum / input.length);
-      };
-
-      // Function to check if a sound matches driver impact frequency profile
-      // More lenient frequency profile matching
-      const matchesDriverProfile = (): boolean => {
-        analyzer.getByteFrequencyData(frequencyData);
-
-        // Calculate frequency indices for our target range
-        const lowIndex: number = Math.floor(
-          (LOW_FREQ * analyzer.frequencyBinCount) / audioContext.sampleRate
-        );
-        const highIndex: number = Math.ceil(
-          (HIGH_FREQ * analyzer.frequencyBinCount) / audioContext.sampleRate
-        );
-
-        // Calculate energy in our target frequency range vs overall energy
-        let targetEnergy: number = 0;
-        let totalEnergy: number = 0;
-
-        for (let i: number = 0; i < frequencyData.length; i++) {
-          const value: number = frequencyData[i] / 255; // Normalize to 0-1
-          totalEnergy += value * value;
-
-          if (i >= lowIndex && i <= highIndex) {
-            targetEnergy += value * value;
-          }
-        }
-
-        // Driver impacts should have significant energy in our target range
-        // Lower ratio requirement from 0.4 to 0.3 (30% instead of 40%)
-        const ratio: number = totalEnergy > 0 ? targetEnergy / totalEnergy : 0;
-
-        // Debug frequency every 10 frames for performance
-        if (calibrationFrames % 10 === 0) {
-          console.log(`Frequency match ratio: ${(ratio * 100).toFixed(1)}%`);
-        }
-
-        return ratio > 0.33; // Adjusted from 0.3 to 0.33 - requiring a stronger frequency match
-      };
-
-      // Function to update history arrays
-      const updateHistories = (volumeLevel: number): void => {
-        // Update overall history
-        volumeHistory.push(volumeLevel);
-        if (volumeHistory.length > VOLUME_HISTORY_SIZE) {
-          volumeHistory.shift(); // Remove oldest value
-        }
-
-        // Update immediate history for spike detection
-        immediateHistory.push(volumeLevel);
-        if (immediateHistory.length > IMMEDIATE_HISTORY_SIZE) {
-          immediateHistory.shift();
-        }
-      };
-
-      // Function to check for significant spike relative to recent average
-      // More sensitive spike detection
-      const isSignificantSpike = (volumeLevel: number): boolean => {
-        const recentAvg: number =
-          immediateHistory.reduce((a, b) => a + b, 0) / immediateHistory.length;
-
-        // Adjusted spike ratio to 3.0x (slightly less sensitive than 2.8x)
-        return volumeLevel > recentAvg * 3.0;
-      };
-
-      // Use console for debugging
-      console.log('🎤 Sound detection started - watch for console logs');
-
-      // This is the function that processes audio
-      processor.onaudioprocess = (e: AudioProcessingEvent): void => {
+      // Function to check volume
+      const checkVolume = (): void => {
         if (
           !mediaRecorderRef.current ||
           mediaRecorderRef.current.state === 'inactive'
         ) {
           // Clean up when not recording
           try {
-            processor.disconnect();
-            analyzer.disconnect();
             source.disconnect();
-            document.body.removeChild(debugDiv);
-            document.body.removeChild(meterDiv);
-          } catch (err) {
-            // Ignore cleanup errors
+            analyzer.disconnect();
+            audioContext.close();
+          } catch (e) {
+            console.error('Error cleaning up audio context:', e);
           }
           return;
         }
 
-        // Get audio data
-        const input: Float32Array = e.inputBuffer.getChannelData(0);
-        const volumeLevel: number = calculateVolume(input);
+        // Get frequency data
+        analyzer.getByteFrequencyData(dataArray);
 
-        // Update histories with current volume
-        updateHistories(volumeLevel);
+        // Calculate average volume
+        let sum: number = 0;
+        for (let i: number = 0; i < dataArray.length; i++) {
+          sum += dataArray[i];
+        }
+        const avgVolume: number = sum / dataArray.length / 255; // Normalize to 0-1
 
-        // CALIBRATION PHASE
+        // Calibration phase
         if (calibrationFrames < CALIBRATION_FRAMES) {
-          // Update baseline volume
           baselineVolume =
-            (baselineVolume * calibrationFrames + volumeLevel) /
+            (baselineVolume * calibrationFrames + avgVolume) /
             (calibrationFrames + 1);
-
-          // Also capture frequency profile during calibration
-          if (calibrationFrames % 5 === 0) {
-            analyzer.getByteFrequencyData(frequencyData);
-            for (let i: number = 0; i < frequencyData.length; i++) {
-              baselineFrequencyProfile[i] =
-                (baselineFrequencyProfile[i] * (calibrationFrames / 5) +
-                  frequencyData[i]) /
-                (calibrationFrames / 5 + 1);
-            }
-          }
-
           calibrationFrames++;
 
-          // After calibration, set threshold higher than baseline
-          if (calibrationFrames === CALIBRATION_FRAMES) {
-            // Slightly higher threshold for less sensitivity
-            threshold = Math.max(0.06, baselineVolume * 8.5);
-
+          if (calibrationFrames === BASELINE_FRAMES) {
+            // Set threshold as multiple of baseline
+            threshold = Math.max(0.05, baselineVolume * 5);
             console.log(
-              `Calibration complete - Baseline: ${baselineVolume.toFixed(4)}, Threshold: ${threshold.toFixed(4)}`
+              `Calibration complete. Baseline: ${baselineVolume.toFixed(4)}, Threshold: ${threshold.toFixed(4)}`
             );
-            debugDiv.innerText = `Ready! Baseline: ${baselineVolume.toFixed(4)}, Threshold: ${threshold.toFixed(4)}`;
 
-            // Show a toast notification so the user knows calibration is done
             toast({
               title: 'Sound Detection Ready',
               description: 'Golf impact sound detection is active',
@@ -605,52 +524,10 @@ export default function VideoCapturePage() {
             });
           }
         }
-        // DETECTION PHASE
+        // Detection phase
         else {
-          // Update debug display
-          const percent: number = Math.min(100, Math.floor(volumeLevel * 1000));
-          levelIndicator.style.width = `${percent}%`;
-          levelIndicator.style.backgroundColor =
-            volumeLevel > threshold ? 'red' : 'green';
-
-          // Update every 5 frames for better performance
-          if (calibrationFrames % 5 === 0) {
-            debugDiv.innerText = `Vol: ${volumeLevel.toFixed(4)}, Threshold: ${threshold.toFixed(4)}, Max: ${maxVolume.toFixed(4)}`;
-          }
-          calibrationFrames++;
-
-          // Track maximum volume
-          if (volumeLevel > maxVolume) {
-            maxVolume = volumeLevel;
-          }
-
-          // Check if volume exceeds threshold
-          if (volumeLevel > threshold) {
-            consecutiveFramesAboveThreshold++;
-          } else {
-            consecutiveFramesAboveThreshold = 0;
-          }
-
-          // Multi-factor detection - more balanced approach:
-          // Volume must be above threshold (always required)
-          // Plus at least one of the following additional conditions:
-          // 1. Must be a significant spike compared to recent history
-          // 2. Should match frequency profile of a driver impact
-          const meetsVolumeRequirement: boolean =
-            consecutiveFramesAboveThreshold >= REQUIRED_CONSECUTIVE_FRAMES;
-          const meetsSpikeCriteria: boolean = isSignificantSpike(volumeLevel);
-          const meetsFrequencyCriteria: boolean = matchesDriverProfile();
-
-          // Detect impact when volume requirement is met plus at least one other criterion
-          // This means we need volume + (frequency OR spike), not all three like before
-          if (
-            meetsVolumeRequirement &&
-            (meetsSpikeCriteria || meetsFrequencyCriteria) &&
-            !isPeaking
-          ) {
-            console.log(
-              `🔊 IMPACT SOUND DETECTED! Level: ${volumeLevel.toFixed(4)}, Spike: ${meetsSpikeCriteria ? 'YES' : 'NO'}, Frequency: ${meetsFrequencyCriteria ? 'YES' : 'NO'}`
-            );
+          // Check if volume exceeds threshold and we're not already in a peak
+          if (avgVolume > threshold && !isPeaking) {
             isPeaking = true;
             peakTime = Date.now();
 
@@ -658,31 +535,13 @@ export default function VideoCapturePage() {
             const impactTime: number =
               (Date.now() - startTimeRef.current) / 1000;
             const formattedTime: string = formatDuration(impactTime);
-            console.log(
-              `Setting impact time to ${impactTime}s (formatted: ${formattedTime})`
-            );
-            console.log(
-              `Current recording duration: ${currentDurationRef.current}s (state: ${recordingDuration}s)`
-            );
 
-            // Store impact time in multiple places for redundancy
-            setImpactTimeLabel(formattedTime);
-            globalImpactTime = formattedTime;
-            window.lastImpactTime = formattedTime;
-            lastImpactTimeRef.current = formattedTime;
-
-            // Update current duration reference to ensure we have accurate timing
-            currentDurationRef.current = impactTime;
+            // Store impact time
+            storeImpactTime(impactTime);
 
             console.log(
-              `*** IMPACT DETECTED *** Time: ${formattedTime}, storing globally`
+              `*** IMPACT DETECTED *** Time: ${formattedTime}, Volume: ${avgVolume.toFixed(4)}`
             );
-
-            // Visual feedback
-            levelIndicator.style.backgroundColor = 'red';
-            levelIndicator.style.width = '100%';
-            debugDiv.innerText = `🎯 IMPACT DETECTED! Level: ${volumeLevel.toFixed(4)} at ${formattedTime}`;
-            debugDiv.style.backgroundColor = 'rgba(255,0,0,0.7)';
 
             // Show toast notification
             toast({
@@ -691,46 +550,37 @@ export default function VideoCapturePage() {
               variant: 'default',
             });
 
-            // Schedule auto-stop after a delay to ensure we capture the full swing follow-through
+            // Schedule auto-stop after a delay
             if (autoStopTimeoutRef.current) {
               clearTimeout(autoStopTimeoutRef.current);
             }
 
-            // Stop recording 2.5 seconds after impact to capture follow-through
+            // Stop recording 2.5 seconds after impact
             autoStopTimeoutRef.current = setTimeout(() => {
-              console.log(
-                `Auto-stop triggered. Impact time was: ${globalImpactTime}`
-              );
               if (
                 mediaRecorderRef.current &&
                 mediaRecorderRef.current.state !== 'inactive'
               ) {
                 stopRecording();
               }
-              // Clean up
-              try {
-                processor.disconnect();
-                analyzer.disconnect();
-                source.disconnect();
-                document.body.removeChild(debugDiv);
-                document.body.removeChild(meterDiv);
-              } catch (err) {
-                // Ignore cleanup errors
-              }
             }, 2500);
-
-            return;
           }
 
-          // Reset peak status after 500ms to allow for new peaks
+          // Reset peak status after 500ms
           if (isPeaking && Date.now() - peakTime > 500) {
             isPeaking = false;
           }
         }
+
+        // Continue checking
+        requestAnimationFrame(checkVolume);
       };
 
+      // Start checking volume
+      checkVolume();
+
       setIsListeningForImpact(true);
-    } catch (error: unknown) {
+    } catch (error) {
       console.error('Failed to initialize sound detection:', error);
       toast({
         title: 'Error',
