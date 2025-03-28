@@ -380,6 +380,20 @@ function EditPage() {
     router.push('/analyse/result');
   }, [videoSrc, startTime, endTime, router]);
 
+  const handleVideoEnded = useCallback(() => {
+    mobileLog('Video playback ended');
+
+    // Update playing state
+    setIsPlaying(false);
+
+    // Reset to start of trim range
+    if (videoRef.current) {
+      videoRef.current.currentTime = startTime;
+      setCurrentTime(startTime);
+      mobileLog(`Reset to trim start position: ${startTime}s`);
+    }
+  }, [startTime]);
+
   return (
     <div className="fixed inset-0 flex flex-col p-4 bg-black bg-opacity-90">
       {videoSrc ? (
@@ -391,6 +405,7 @@ function EditPage() {
               src={videoSrc}
               className="w-full h-fit object-contain rounded-lg"
               onTimeUpdate={handleTimeUpdate}
+              onEnded={handleVideoEnded}
               onClick={handlePlayPause}
               preload="metadata"
               playsInline
