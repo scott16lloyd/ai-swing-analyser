@@ -13,6 +13,8 @@ function EditPage() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [thumbnails, setThumbnails] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [mobileDebugLogs, setMobileDebugLogs] = useState<string[]>([]);
+  const [showDebugger, setShowDebugger] = useState(false);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -20,6 +22,42 @@ function EditPage() {
   const isDraggingRightRef = useRef(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const router = useRouter();
+
+  // Debug log for mobile
+  const mobileLog = useCallback((message: string) => {
+    console.log(message);
+    setMobileDebugLogs((prev) => [message, ...prev].slice(0, 20));
+  }, []);
+
+  useEffect(() => {
+    const originalConsoleLog = console.log;
+    const originalConsoleError = console.error;
+
+    console.log = (...args) => {
+      originalConsoleLog(...args);
+      setMobileDebugLogs((prev) =>
+        [`LOG: ${args.map((a) => JSON.stringify(a)).join(' ')}`, ...prev].slice(
+          0,
+          20
+        )
+      );
+    };
+
+    console.error = (...args) => {
+      originalConsoleError(...args);
+      setMobileDebugLogs((prev) =>
+        [
+          `ERROR: ${args.map((a) => JSON.stringify(a)).join(' ')}`,
+          ...prev,
+        ].slice(0, 20)
+      );
+    };
+
+    return () => {
+      console.log = originalConsoleLog;
+      console.error = originalConsoleError;
+    };
+  }, []);
 
   // Get video source from sessionStorage
   useEffect(() => {
@@ -444,6 +482,25 @@ function EditPage() {
               Trim
             </button>
           </div>
+          {showDebugger && (
+            <div className="fixed bottom-20 left-0 right-0 max-h-48 overflow-y-auto bg-black/80 text-white text-xs p-2 z-50">
+              <div className="mb-2 flex justify-between">
+                <div>Debug Console</div>
+                <button onClick={() => setShowDebugger(false)}>Close</button>
+              </div>
+              {mobileDebugLogs.map((log, i) => (
+                <div key={i} className="border-b border-gray-700 py-1">
+                  {log}
+                </div>
+              ))}
+            </div>
+          )}
+          <button
+            onClick={() => setShowDebugger((prev) => !prev)}
+            className="fixed top-2 right-2 bg-black/50 text-white text-xs p-1 rounded z-50"
+          >
+            Debug
+          </button>
         </>
       ) : (
         <div className="flex-1 flex items-center justify-center">
