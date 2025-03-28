@@ -83,12 +83,12 @@ function AnalysePage() {
     return `${mins}:${secs}`;
   };
   return (
-    <>
+    <div className="fixed inset-0 flex flex-col overflow-hidden touch-none p-4">
       {/* Webcam component */}
       <Webcam
         audio={false}
         ref={webcamRef}
-        className="rounded-lg h-full w-auto object-cover"
+        className="rounded-lg h-full w-auto object-cover overscroll-none"
         mirrored={false}
       />
       {/* Timer component */}
@@ -98,7 +98,7 @@ function AnalysePage() {
         </div>
       )}
       {/* Record button components */}
-      <div className="absolute bottom-24 left-0 right-0 flex justify-center">
+      <div className="absolute bottom-24 left-0 right-0 flex justify-center pointer-events-auto">
         {capturing ? (
           <button
             onClick={handleStopCaptureClick}
@@ -117,7 +117,7 @@ function AnalysePage() {
           </button>
         )}
       </div>
-    </>
+    </div>
   );
 }
 
