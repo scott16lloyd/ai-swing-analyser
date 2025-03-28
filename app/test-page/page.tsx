@@ -3,6 +3,7 @@
 
 import { useState, useRef, useEffect, ChangeEvent } from 'react';
 import Head from 'next/head';
+import { Camera } from 'lucide-react';
 
 // Add type definitions for browser-specific video properties
 interface ExtendedHTMLVideoElement extends HTMLVideoElement {
@@ -26,11 +27,20 @@ export default function VideoTrimmer(): JSX.Element {
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const [processProgress, setProcessProgress] = useState<number>(0);
 
+  // Camera recording states
+  const [isCameraActive, setIsCameraActive] = useState<boolean>(false);
+  const [isRecording, setIsRecording] = useState<boolean>(false);
+  const [recordingTime, setRecordingTime] = useState<number>(0);
+  const [recordedVideo, setRecordedVideo] = useState<Blob | null>(null);
+  const [mediaStream, setMediaStream] = useState<MediaStream | null>(null);
+
   const videoRef = useRef<HTMLVideoElement>(null);
+  const cameraRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const thumbnailsContainerRef = useRef<HTMLDivElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
+  const recordingTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   // Handle file upload
   const handleFileChange = (e: ChangeEvent<HTMLInputElement>): void => {
@@ -38,6 +48,11 @@ export default function VideoTrimmer(): JSX.Element {
     if (files && files.length > 0) {
       const file = files[0];
       if (file && file.type.startsWith('video/')) {
+        // Stop camera if active
+        if (isCameraActive) {
+          stopCamera();
+        }
+
         setVideoFile(file);
         setIsTrimmed(false);
         setThumbnails([]);
@@ -47,6 +62,152 @@ export default function VideoTrimmer(): JSX.Element {
         setVideoURL(url);
       }
     }
+  };
+
+  // Camera functionality
+  const startCamera = async (): Promise<void> => {
+    try {
+      // Reset any existing video
+      if (videoURL) {
+        URL.revokeObjectURL(videoURL);
+        setVideoURL('');
+      }
+
+      setIsTrimmed(false);
+      setThumbnails([]);
+      setVideoFile(null);
+
+      const constraints = {
+        audio: true,
+        video: {
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+        },
+      };
+
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      setMediaStream(stream);
+
+      if (cameraRef.current) {
+        cameraRef.current.srcObject = stream;
+      }
+
+      setIsCameraActive(true);
+    } catch (error) {
+      console.error('Error accessing camera:', error);
+      alert(
+        'Could not access your camera. Please check permissions and try again.'
+      );
+    }
+  };
+
+  const stopCamera = (): void => {
+    if (mediaStream) {
+      mediaStream.getTracks().forEach((track) => track.stop());
+      setMediaStream(null);
+    }
+
+    if (cameraRef.current) {
+      cameraRef.current.srcObject = null;
+    }
+
+    setIsCameraActive(false);
+
+    // If recording, stop it
+    if (isRecording) {
+      stopRecording();
+    }
+  };
+
+  const startRecording = (): void => {
+    if (!mediaStream) return;
+
+    recordedChunksRef.current = [];
+
+    // Find the best supported MIME type
+    let mimeType = 'video/webm;codecs=vp9';
+    if (!MediaRecorder.isTypeSupported(mimeType)) {
+      mimeType = 'video/webm;codecs=vp8';
+      if (!MediaRecorder.isTypeSupported(mimeType)) {
+        mimeType = 'video/webm';
+      }
+    }
+
+    try {
+      const recorder = new MediaRecorder(mediaStream, {
+        mimeType: mimeType,
+        videoBitsPerSecond: 5000000,
+      });
+
+      recorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) {
+          recordedChunksRef.current.push(e.data);
+        }
+      };
+
+      recorder.start(1000); // Collect in 1-second chunks
+      mediaRecorderRef.current = recorder;
+
+      setIsRecording(true);
+      setRecordingTime(0);
+
+      // Start recording timer
+      const startTime = Date.now();
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingTime(Math.floor((Date.now() - startTime) / 1000));
+      }, 1000);
+    } catch (error) {
+      console.error('Error starting recording:', error);
+      alert('Failed to start recording. Please try again.');
+    }
+  };
+
+  const stopRecording = (): void => {
+    if (
+      !mediaRecorderRef.current ||
+      mediaRecorderRef.current.state === 'inactive'
+    )
+      return;
+
+    mediaRecorderRef.current.stop();
+
+    // Stop the timer
+    if (recordingTimerRef.current) {
+      clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+
+    // Process recorded chunks into a video
+    mediaRecorderRef.current.onstop = () => {
+      if (recordedChunksRef.current.length === 0) {
+        setIsRecording(false);
+        return;
+      }
+
+      // Create a blob from recorded chunks
+      const blob = new Blob(recordedChunksRef.current, {
+        type: mediaRecorderRef.current?.mimeType || 'video/webm',
+      });
+      setRecordedVideo(blob);
+
+      // Convert the blob to a File object to match existing flow
+      const fileName = `recording_${new Date().toISOString().replace(/[:.]/g, '-')}.webm`;
+      const file = new File([blob], fileName, { type: blob.type });
+      setVideoFile(file);
+
+      // Create URL for the video
+      const url = URL.createObjectURL(blob);
+      setVideoURL(url);
+
+      setIsRecording(false);
+    };
+  };
+
+  const useRecordedVideo = (): void => {
+    if (!recordedVideo) return;
+
+    // Stop the camera
+    stopCamera();
   };
 
   // Update duration once the video metadata is loaded
@@ -578,6 +739,14 @@ export default function VideoTrimmer(): JSX.Element {
     }
   };
 
+  // Format time to MM:SS.ms
+  const formatTime = (timeInSeconds: number): string => {
+    const minutes = Math.floor(timeInSeconds / 60);
+    const seconds = Math.floor(timeInSeconds % 60);
+    const milliseconds = Math.floor((timeInSeconds % 1) * 100);
+    return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}.${milliseconds.toString().padStart(2, '0')}`;
+  };
+
   // Clean up URLs when component unmounts
   useEffect(() => {
     return () => {
@@ -600,40 +769,108 @@ export default function VideoTrimmer(): JSX.Element {
           console.error('Error stopping media recorder:', e);
         }
       }
-    };
-  }, [videoURL, trimmedVideoURL, thumbnails]);
 
-  // Format time to MM:SS.ms
-  const formatTime = (timeInSeconds: number): string => {
-    const minutes = Math.floor(timeInSeconds / 60);
-    const seconds = Math.floor(timeInSeconds % 60);
-    const milliseconds = Math.floor((timeInSeconds % 1) * 100);
-    return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}.${milliseconds.toString().padStart(2, '0')}`;
-  };
+      // Stop camera if active
+      if (mediaStream) {
+        mediaStream.getTracks().forEach((track) => track.stop());
+      }
+
+      // Clear recording timer
+      if (recordingTimerRef.current) {
+        clearInterval(recordingTimerRef.current);
+      }
+    };
+  }, [videoURL, trimmedVideoURL, thumbnails, mediaStream]);
 
   return (
     <div className="container mx-auto px-4 py-8 max-w-4xl">
       <Head>
         <title>Video Trimmer</title>
-        <meta name="description" content="Upload and trim videos easily" />
+        <meta
+          name="description"
+          content="Upload, record, and trim videos easily"
+        />
       </Head>
 
       <h1 className="text-3xl font-bold mb-6 text-center">Video Trimmer</h1>
 
-      <div className="mb-6">
-        <label className="block mb-2 font-medium">Upload Video</label>
-        <input
-          type="file"
-          accept="video/*"
-          onChange={handleFileChange}
-          className="block w-full text-sm text-gray-500
-            file:mr-4 file:py-2 file:px-4
-            file:rounded-md file:border-0
-            file:text-sm file:font-semibold
-            file:bg-blue-50 file:text-blue-700
-            hover:file:bg-blue-100"
-        />
+      <div className="mb-6 flex flex-col md:flex-row gap-4">
+        <div className="w-full md:w-1/2">
+          <label className="block mb-2 font-medium">Upload Video</label>
+          <input
+            type="file"
+            accept="video/*"
+            onChange={handleFileChange}
+            className="block w-full text-sm text-gray-500
+              file:mr-4 file:py-2 file:px-4
+              file:rounded-md file:border-0
+              file:text-sm file:font-semibold
+              file:bg-blue-50 file:text-blue-700
+              hover:file:bg-blue-100"
+          />
+        </div>
+
+        <div className="w-full md:w-1/2">
+          <label className="block mb-2 font-medium">Record Video</label>
+          <div className="flex space-x-2">
+            {!isCameraActive ? (
+              <button
+                onClick={startCamera}
+                className="bg-blue-600 hover:bg-blue-700 text-white py-2 px-4 rounded-md flex items-center"
+              >
+                <Camera size={18} className="mr-2" />
+                Start Camera
+              </button>
+            ) : (
+              <div className="flex space-x-2">
+                {!isRecording ? (
+                  <button
+                    onClick={startRecording}
+                    className="bg-red-600 hover:bg-red-700 text-white py-2 px-4 rounded-md"
+                  >
+                    Record
+                  </button>
+                ) : (
+                  <button
+                    onClick={stopRecording}
+                    className="bg-gray-600 hover:bg-gray-700 text-white py-2 px-4 rounded-md flex items-center"
+                  >
+                    <span className="mr-2">■</span> Stop (
+                    {formatTime(recordingTime)})
+                  </button>
+                )}
+                <button
+                  onClick={stopCamera}
+                  className="bg-gray-500 hover:bg-gray-600 text-white py-2 px-4 rounded-md"
+                >
+                  Turn Off Camera
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
       </div>
+
+      {/* Camera preview */}
+      {isCameraActive && (
+        <div className="mb-6 bg-gray-900 rounded-lg overflow-hidden">
+          <div className="relative aspect-video">
+            <video
+              ref={cameraRef}
+              autoPlay
+              playsInline
+              muted
+              className="w-full h-full object-contain"
+            />
+            {isRecording && (
+              <div className="absolute top-4 right-4 bg-red-600 text-white px-2 py-1 rounded-md flex items-center">
+                <span className="animate-pulse mr-2">●</span>
+                REC {formatTime(recordingTime)}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {videoURL && (
         <div className="bg-gray-100 p-6 rounded-xl shadow-md">
