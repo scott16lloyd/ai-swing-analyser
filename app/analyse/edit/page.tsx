@@ -110,6 +110,23 @@ function EditPage() {
 
       // Add video URL to temp video
       tempVideo.src = recordedVideo;
+
+      // Third approach: try after a delay incase other methods fail
+      setTimeout(() => {
+        if (
+          videoDuration <= 0 &&
+          videoRef.current &&
+          videoRef.current.duration
+        ) {
+          const refDuration = videoRef.current.duration;
+          mobileLog(`Late duration from videoRef: ${refDuration}`);
+          if (isFinite(refDuration) && refDuration > 0) {
+            setVideoDuration(refDuration);
+            setEndTime(refDuration);
+            setIsLoading(false);
+          }
+        }
+      }, 1000);
     }
   }, []);
 
@@ -379,6 +396,20 @@ function EditPage() {
               playsInline
               disablePictureInPicture
               controlsList="noplaybackrate nofullscreen"
+              onLoadedMetadata={() => {
+                mobileLog(
+                  `onLoadedMetadata fired, duration: ${videoRef.current?.duration}`
+                );
+                if (
+                  videoRef.current &&
+                  videoRef.current.duration &&
+                  isFinite(videoRef.current.duration)
+                ) {
+                  setVideoDuration(videoRef.current.duration);
+                  setEndTime(videoRef.current.duration);
+                  setIsLoading(false);
+                }
+              }}
             />
           </div>
           {/* Play/Pause button */}
