@@ -61,6 +61,7 @@ function EditPage() {
 
   // Get video source from sessionStorage
   useEffect(() => {
+    // First approach using getBlobDuration
     const recordedVideo = sessionStorage.getItem('recordedVideo');
     if (recordedVideo) {
       setVideoSrc(recordedVideo);
@@ -85,6 +86,30 @@ function EditPage() {
           }
           setIsLoading(false);
         });
+
+      // Second approach: create a temporary video element to get duration
+      const tempVideo = document.createElement('video');
+      tempVideo.preload = 'metadata';
+
+      tempVideo.onloadeddata = () => {
+        if (
+          tempVideo.duration &&
+          isFinite(tempVideo.duration) &&
+          tempVideo.duration > 0
+        ) {
+          mobileLog(`Duration from temp video: ${tempVideo.duration}`);
+          setVideoDuration(tempVideo.duration);
+          setEndTime(tempVideo.duration);
+          setIsLoading(false);
+        }
+      };
+
+      tempVideo.onerror = (e) => {
+        mobileLog(`Temp video error: ${e}`);
+      };
+
+      // Add video URL to temp video
+      tempVideo.src = recordedVideo;
     }
   }, []);
 
