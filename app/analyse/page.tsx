@@ -1,5 +1,6 @@
 'use client';
 import React, { useRef, useState, useCallback, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
 import Webcam from 'react-webcam';
 
 function AnalysePage() {
@@ -9,6 +10,7 @@ function AnalysePage() {
   const [capturing, setCapturing] = useState(false);
   const [recordedChunks, setRecordedChunks] = useState<Blob[]>([]);
   const [elapsedTime, setElapsedTime] = useState(0);
+  const router = useRouter();
 
   const handleStartCaptureClick = useCallback(() => {
     setCapturing(true);
@@ -29,9 +31,17 @@ function AnalysePage() {
     ({ data }: { data: Blob }) => {
       if (data.size > 0) {
         setRecordedChunks((prev) => prev.concat(data));
+
+        // Check if capturing is stopped
+        if (!capturing) {
+          // Create blob and navigate to edit page
+          const blob = new Blob([data], { type: 'video/webm' });
+          sessionStorage.setItem('recordedVideo', URL.createObjectURL(blob));
+          router.push('/analyse/edit');
+        }
       }
     },
-    [setRecordedChunks]
+    [setRecordedChunks, router]
   );
 
   const handleStopCaptureClick = useCallback(() => {
@@ -39,7 +49,6 @@ function AnalysePage() {
       mediaRecorderRef.current.stop();
       setCapturing(false);
     }
-    // handleDownload();
   }, [mediaRecorderRef, webcamRef, setCapturing]);
 
   const handleDownload = useCallback(() => {
