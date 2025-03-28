@@ -59,9 +59,11 @@ function EditPage() {
     };
   }, []);
 
-  // Modify your useEffect to clean up previous metadata
+  // Split the logic into two separate useEffects
+
+  // First useEffect: Just handle getting the video source
   useEffect(() => {
-    // Reset all state first to clear any previous values
+    // Reset state
     setVideoDuration(0);
     setStartTime(0);
     setEndTime(0);
@@ -70,14 +72,14 @@ function EditPage() {
     setThumbnails([]);
     setIsLoading(true);
 
-    // Clean up any previous video elements
+    // Clear previous video
     if (videoRef.current) {
       videoRef.current.pause();
       videoRef.current.removeAttribute('src');
       videoRef.current.load();
     }
 
-    // Clear previous object URLs
+    // Clear previous URL
     if (videoSrc) {
       URL.revokeObjectURL(videoSrc);
       setVideoSrc(null);
@@ -85,48 +87,16 @@ function EditPage() {
 
     mobileLog('Cleared previous metadata and state');
 
-    // Now get the new video source
+    // Get recorded video URL from session storage
     const recordedVideo = sessionStorage.getItem('recordedVideo');
     if (!recordedVideo) {
       mobileLog('No video found in sessionStorage');
       return;
     }
 
-    // Create a fresh URL object to avoid caching issues
-    try {
-      // Get the blob from sessionStorage
-      const fetchResponse = fetch(recordedVideo)
-        .then((response) => response.blob())
-        .then((blob) => {
-          // Create a fresh object URL
-          const freshUrl = URL.createObjectURL(blob);
-          mobileLog(`Created fresh URL for video: ${freshUrl}`);
-          setVideoSrc(freshUrl);
-
-          // Then continue with duration detection
-          getBlobDuration(freshUrl)
-            .then((duration) => {
-              mobileLog(`Fresh getBlobDuration result: ${duration}`);
-              if (duration && isFinite(duration) && duration > 0) {
-                setVideoDuration(duration);
-                setEndTime(duration);
-                setIsLoading(false);
-              }
-            })
-            .catch((error) => {
-              mobileLog(`Fresh getBlobDuration failed: ${error.message}`);
-            });
-        })
-        .catch((error) => {
-          mobileLog(`Error getting blob: ${error.message}`);
-          setVideoSrc(recordedVideo); // Fall back to the original URL
-        });
-    } catch (error) {
-      mobileLog(
-        `Error in URL handling: ${error instanceof Error ? error.message : 'Unknown error'}`
-      );
-      setVideoSrc(recordedVideo); // Fall back to the original URL
-    }
+    // For simplicity, just use the URL directly first
+    setVideoSrc(recordedVideo);
+    mobileLog('Set video source directly from sessionStorage');
 
     // Cleanup function
     return () => {
@@ -134,7 +104,55 @@ function EditPage() {
         URL.revokeObjectURL(videoSrc);
       }
     };
-  }, []);
+  }, []); // Empty dependency array - run once on mount
+
+  // Second useEffect: Handle duration detection AFTER video source is set
+  useEffect(() => {
+    // Only run this effect if we have a video source
+    if (!videoSrc) return;
+
+    mobileLog(`Starting duration detection for video: ${videoSrc}`);
+
+    // Method 1: Try getBlobDuration
+    getBlobDuration(videoSrc)
+      .then((duration) => {
+        mobileLog(`getBlobDuration result: ${duration}`);
+        if (duration && isFinite(duration) && duration > 0) {
+          setVideoDuration(duration);
+          setEndTime(duration);
+          setIsLoading(false);
+          mobileLog(`Duration set from getBlobDuration: ${duration}`);
+        }
+      })
+      .catch((error) => {
+        mobileLog(`getBlobDuration failed: ${error.message}`);
+      });
+
+    // Method 2: Wait for the video element's metadata to load
+    const handleMetadata = () => {
+      if (videoRef.current && videoRef.current.duration) {
+        const duration = videoRef.current.duration;
+        mobileLog(`Video element duration from event: ${duration}`);
+        if (isFinite(duration) && duration > 0) {
+          setVideoDuration(duration);
+          setEndTime(duration);
+          setIsLoading(false);
+        }
+      }
+    };
+
+    if (videoRef.current) {
+      videoRef.current.addEventListener('loadedmetadata', handleMetadata);
+      videoRef.current.addEventListener('durationchange', handleMetadata);
+    }
+
+    return () => {
+      if (videoRef.current) {
+        videoRef.current.removeEventListener('loadedmetadata', handleMetadata);
+        videoRef.current.removeEventListener('durationchange', handleMetadata);
+      }
+    };
+  }, [videoSrc]); // This effect runs whenever videoSrc changes
 
   // Update current time as video plays
   const handleTimeUpdate = useCallback(() => {
