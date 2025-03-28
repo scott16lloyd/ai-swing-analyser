@@ -59,75 +59,81 @@ function EditPage() {
     };
   }, []);
 
-  // Get video source from sessionStorage
+  // Modify your useEffect to clean up previous metadata
   useEffect(() => {
-    // First approach using getBlobDuration
-    const recordedVideo = sessionStorage.getItem('recordedVideo');
-    if (recordedVideo) {
-      setVideoSrc(recordedVideo);
+    // Reset all state first to clear any previous values
+    setVideoDuration(0);
+    setStartTime(0);
+    setEndTime(0);
+    setCurrentTime(0);
+    setIsPlaying(false);
+    setThumbnails([]);
+    setIsLoading(true);
 
-      getBlobDuration(recordedVideo)
-        .then((duration) => {
-          mobileLog(`getBlobDuration result: ${duration}`);
-          if (duration && isFinite(duration) && duration > 0) {
-            setVideoDuration(duration);
-            setEndTime(duration);
-            setIsLoading(false);
-            mobileLog(`Duration set from getBlobDuration: ${duration}`);
-          } else {
-            throw new Error('Invalid duration from getBlobDuration');
-          }
+    // Clean up any previous video elements
+    if (videoRef.current) {
+      videoRef.current.pause();
+      videoRef.current.removeAttribute('src');
+      videoRef.current.load();
+    }
+
+    // Clear previous object URLs
+    if (videoSrc) {
+      URL.revokeObjectURL(videoSrc);
+      setVideoSrc(null);
+    }
+
+    mobileLog('Cleared previous metadata and state');
+
+    // Now get the new video source
+    const recordedVideo = sessionStorage.getItem('recordedVideo');
+    if (!recordedVideo) {
+      mobileLog('No video found in sessionStorage');
+      return;
+    }
+
+    // Create a fresh URL object to avoid caching issues
+    try {
+      // Get the blob from sessionStorage
+      const fetchResponse = fetch(recordedVideo)
+        .then((response) => response.blob())
+        .then((blob) => {
+          // Create a fresh object URL
+          const freshUrl = URL.createObjectURL(blob);
+          mobileLog(`Created fresh URL for video: ${freshUrl}`);
+          setVideoSrc(freshUrl);
+
+          // Then continue with duration detection
+          getBlobDuration(freshUrl)
+            .then((duration) => {
+              mobileLog(`Fresh getBlobDuration result: ${duration}`);
+              if (duration && isFinite(duration) && duration > 0) {
+                setVideoDuration(duration);
+                setEndTime(duration);
+                setIsLoading(false);
+              }
+            })
+            .catch((error) => {
+              mobileLog(`Fresh getBlobDuration failed: ${error.message}`);
+            });
         })
         .catch((error) => {
-          mobileLog(`getBlobDuration failed: ${error.message}`);
-          if (videoRef.current && videoRef.current.duration) {
-            setVideoDuration(videoRef.current.duration);
-            setEndTime(videoRef.current.duration);
-          }
-          setIsLoading(false);
+          mobileLog(`Error getting blob: ${error.message}`);
+          setVideoSrc(recordedVideo); // Fall back to the original URL
         });
-
-      // Second approach: create a temporary video element to get duration
-      const tempVideo = document.createElement('video');
-      tempVideo.preload = 'metadata';
-
-      tempVideo.onloadeddata = () => {
-        if (
-          tempVideo.duration &&
-          isFinite(tempVideo.duration) &&
-          tempVideo.duration > 0
-        ) {
-          mobileLog(`Duration from temp video: ${tempVideo.duration}`);
-          setVideoDuration(tempVideo.duration);
-          setEndTime(tempVideo.duration);
-          setIsLoading(false);
-        }
-      };
-
-      tempVideo.onerror = (e) => {
-        mobileLog(`Temp video error: ${e}`);
-      };
-
-      // Add video URL to temp video
-      tempVideo.src = recordedVideo;
-
-      // Third approach: try after a delay incase other methods fail
-      setTimeout(() => {
-        if (
-          videoDuration <= 0 &&
-          videoRef.current &&
-          videoRef.current.duration
-        ) {
-          const refDuration = videoRef.current.duration;
-          mobileLog(`Late duration from videoRef: ${refDuration}`);
-          if (isFinite(refDuration) && refDuration > 0) {
-            setVideoDuration(refDuration);
-            setEndTime(refDuration);
-            setIsLoading(false);
-          }
-        }
-      }, 1000);
+    } catch (error) {
+      mobileLog(
+        `Error in URL handling: ${error instanceof Error ? error.message : 'Unknown error'}`
+      );
+      setVideoSrc(recordedVideo); // Fall back to the original URL
     }
+
+    // Cleanup function
+    return () => {
+      if (videoSrc) {
+        URL.revokeObjectURL(videoSrc);
+      }
+    };
   }, []);
 
   // Update current time as video plays
