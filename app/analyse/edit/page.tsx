@@ -50,10 +50,6 @@ function EditPage() {
     }
   }, []);
 
-  const handleVideoEnded = useCallback(() => {
-    setIsPlaying(false);
-  }, []);
-
   // Update current time as video plays
   const handleTimeUpdate = useCallback(() => {
     if (videoRef.current) {
@@ -198,14 +194,17 @@ function EditPage() {
     const containerWidth = container.offsetWidth;
 
     const handleMouseMove = (e: MouseEvent | TouchEvent) => {
+      e.preventDefault();
       const containerRect = container.getBoundingClientRect();
 
       // Get x position relative to container
       let clientX: number;
-      if ('touches' in e) {
+      if ('touches' in e && e.touches.length > 0) {
         clientX = e.touches[0].clientX;
-      } else {
+      } else if ('clientX' in e) {
         clientX = e.clientX;
+      } else {
+        return; // Exit if position cant be found
       }
 
       const relativeX = clientX - containerRect.left;
@@ -248,18 +247,20 @@ function EditPage() {
   const handleLeftHandleDown = useCallback(
     (e: React.MouseEvent | React.TouchEvent) => {
       e.preventDefault();
+      e.stopPropagation();
       isDraggingLeftRef.current = true;
     },
-    []
+    [videoDuration]
   );
 
   // Handle mouse/touch down on right handle
   const handleRightHandleDown = useCallback(
     (e: React.MouseEvent | React.TouchEvent) => {
       e.preventDefault();
+      e.stopPropagation();
       isDraggingRightRef.current = true;
     },
-    []
+    [videoDuration]
   );
 
   // Handle direct clicks on timeline
@@ -304,11 +305,11 @@ function EditPage() {
       {videoSrc ? (
         <>
           {/* Video preview */}
-          <div className="flex-1 relative mb-4 rounded-lg overflow-hidden">
+          <div className="flex relative mb-4 rounded-lg overflow-hidden h-fit">
             <video
               ref={videoRef}
               src={videoSrc}
-              className="w-full h-full object-contain rounded-lg"
+              className="w-full h-fit object-contain rounded-lg"
               onTimeUpdate={handleTimeUpdate}
               onClick={handlePlayPause}
               preload="metadata"
