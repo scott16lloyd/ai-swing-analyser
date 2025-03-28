@@ -351,6 +351,9 @@ function EditPage() {
               onTimeUpdate={handleTimeUpdate}
               onClick={handlePlayPause}
               preload="metadata"
+              playsInline
+              disablePictureInPicture
+              controlsList="noplaybackrate nofullscreen"
             />
           </div>
           {/* Play/Pause button */}
