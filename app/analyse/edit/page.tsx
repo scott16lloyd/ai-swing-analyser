@@ -67,18 +67,18 @@ function EditPage() {
 
       getBlobDuration(recordedVideo)
         .then((duration) => {
-          console.log('Video duration:', duration);
-          setVideoDuration(duration);
-          setEndTime(duration);
-          setIsLoading(false);
-
-          // Generate thumbnails after duration is set
-          setTimeout(() => {
-            generateThumbnails();
-          }, 500);
+          mobileLog(`getBlobDuration result: ${duration}`);
+          if (duration && isFinite(duration) && duration > 0) {
+            setVideoDuration(duration);
+            setEndTime(duration);
+            setIsLoading(false);
+            mobileLog(`Duration set from getBlobDuration: ${duration}`);
+          } else {
+            throw new Error('Invalid duration from getBlobDuration');
+          }
         })
         .catch((error) => {
-          console.error('Failed to get video duration:', error);
+          mobileLog(`getBlobDuration failed: ${error.message}`);
           if (videoRef.current && videoRef.current.duration) {
             setVideoDuration(videoRef.current.duration);
             setEndTime(videoRef.current.duration);
