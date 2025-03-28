@@ -30,6 +30,19 @@ function EditPage() {
   }, []);
 
   useEffect(() => {
+    // Check if we need a fresh page load
+    const needsRefresh = sessionStorage.getItem('needsRefresh');
+
+    if (needsRefresh === 'true') {
+      // Clear the flag
+      sessionStorage.removeItem('needsRefresh');
+
+      // Force a page refresh
+      window.location.reload();
+    }
+  }, []);
+
+  useEffect(() => {
     const originalConsoleLog = console.log;
     const originalConsoleError = console.error;
 

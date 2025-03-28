@@ -29,27 +29,61 @@ function AnalysePage() {
 
   const handleDataAvailable = useCallback(
     ({ data }: { data: Blob }) => {
+      console.log('Data available, size:', data.size);
       if (data.size > 0) {
         setRecordedChunks((prev) => prev.concat(data));
 
         // Check if capturing is stopped
         if (!capturing) {
-          // Create blob and navigate to edit page
+          console.log('Creating blob and navigating');
+
+          // First, clean up any previous blob URLs
+          const prevVideoUrl = sessionStorage.getItem('recordedVideo');
+          if (prevVideoUrl && prevVideoUrl.startsWith('blob:')) {
+            try {
+              URL.revokeObjectURL(prevVideoUrl);
+              console.log('Revoked previous blob URL');
+            } catch (e) {
+              console.error('Failed to revoke URL:', e);
+            }
+          }
+          // Create new blob and navigate to edit page
           const blob = new Blob([data], { type: 'video/webm' });
-          sessionStorage.setItem('recordedVideo', URL.createObjectURL(blob));
+
+          // Create a clean blob URL without query parameters
+          const videoUrl = URL.createObjectURL(blob);
+          console.log('Created new blob URL:', videoUrl);
+
+          // Set a refresh flag
+          sessionStorage.setItem('needsRefresh', 'true');
+
+          // Store the video URL
+          sessionStorage.setItem('recordedVideo', videoUrl);
           router.push('/analyse/edit');
         }
       }
     },
-    [setRecordedChunks, router]
+    [setRecordedChunks, capturing, router]
   );
 
   const handleStopCaptureClick = useCallback(() => {
+    console.log('Stop button clicked');
     if (mediaRecorderRef.current) {
-      mediaRecorderRef.current.stop();
-      setCapturing(false);
+      try {
+        // First update UI state so the button appears disabled
+        setCapturing(false);
+
+        // Then stop the recorder
+        mediaRecorderRef.current.stop();
+        console.log('MediaRecorder stopped');
+
+        // Set refresh flag now rather than in the data handler
+        sessionStorage.setItem('needsRefresh', 'true');
+      } catch (err) {
+        console.error('Error stopping recording:', err);
+      }
     }
-  }, [mediaRecorderRef, webcamRef, setCapturing]);
+  }, [mediaRecorderRef, setCapturing]);
 
   const handleDownload = useCallback(() => {
     if (recordedChunks.length) {
@@ -113,6 +147,8 @@ function AnalysePage() {
             onClick={handleStopCaptureClick}
             className="relative flex items-center justify-center w-24 h-16 rounded-full transition-colors duration-300 border-2 bg-red-500 border-red-600"
             aria-label="Stop recording"
+            style={{ touchAction: 'manipulation' }}
+            type="button"
           >
             <div className="w-8 h-8 rounded-sm bg-white animate-pulse"></div>
           </button>
