@@ -89,6 +89,7 @@ function AnalysePage() {
         audio={false}
         ref={webcamRef}
         className="rounded-lg h-full w-auto object-cover"
+        mirrored={false}
       />
       {/* Timer component */}
       {capturing && (
