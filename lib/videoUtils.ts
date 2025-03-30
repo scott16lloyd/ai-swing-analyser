@@ -506,7 +506,11 @@ async function tryAlternativeSafariApproach(
  */
 export const getSupportedMimeType = (): string => {
   const types = [
+    'video/webm;codecs=h264',
+    'video/webm;codecs=vp9',
     'video/mp4;codecs=h264',
+    'video/webm;codecs=vp8,opus',
+    'video/webm',
   ];
 
   for (const type of types) {
@@ -517,7 +521,7 @@ export const getSupportedMimeType = (): string => {
   }
 
   // Fallback to basic webm
-  return 'video/mp4;codecs=h264';
+  return 'video/webm';
 };
 
 /**
