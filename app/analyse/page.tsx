@@ -93,7 +93,7 @@ function AnalysePage() {
   const handleDownload = useCallback(() => {
     if (recordedChunks.length) {
       const blob = new Blob(recordedChunks, {
-        type: 'video/mp4',
+        type: 'video/webm',
       });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
