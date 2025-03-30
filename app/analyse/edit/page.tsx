@@ -72,41 +72,7 @@ function EditPage() {
     };
   }, []);
 
-  useEffect(() => {
-    if (!videoSrc || !videoRef.current) return;
-
-    // Clean up any existing sources
-    while (videoRef.current.firstChild) {
-      videoRef.current.removeChild(videoRef.current.firstChild);
-    }
-
-    // Create source element
-    const source = document.createElement('source');
-    source.type = 'video/mp4';
-    source.src = videoSrc;
-
-    // Append source to video element
-    videoRef.current.appendChild(source);
-
-    // Load the video
-    videoRef.current.load();
-
-    // If we were playing before, resume playback
-    if (isPlaying) {
-      videoRef.current
-        .play()
-        .catch((err) => console.error('Error playing video:', err));
-    }
-
-    return () => {
-      // Clean up source elements when unmounting or when source changes
-      if (videoRef.current) {
-        while (videoRef.current.firstChild) {
-          videoRef.current.removeChild(videoRef.current.firstChild);
-        }
-      }
-    };
-  }, [videoSrc, isPlaying]);
+  // Split the logic into two separate useEffects
 
   // First useEffect: Just handle getting the video source
   useEffect(() => {
@@ -122,29 +88,59 @@ function EditPage() {
     // Clear previous video
     if (videoRef.current) {
       videoRef.current.pause();
+      // Remove all existing source elements
+      while (videoRef.current.firstChild) {
+        videoRef.current.removeChild(videoRef.current.firstChild);
+      }
+
       videoRef.current.removeAttribute('src');
       videoRef.current.load();
+
+      // Clear previous URL
+      if (videoSrc) {
+        URL.revokeObjectURL(videoSrc);
+        setVideoSrc(null);
+      }
+
+      mobileLog('Cleared previous metadata and state');
+
+      // Get recorded video URL from session storage
+      const recordedVideo = sessionStorage.getItem('recordedVideo');
+      if (!recordedVideo) {
+        mobileLog('No video found in sessionStorage');
+        return;
+      }
+
+      try {
+        // Use the source element for iOS comptatability
+        if (videoRef.current) {
+          const sourceElement = document.createElement('source');
+          sourceElement.type = 'video/webm';
+          sourceElement.src = recordedVideo;
+
+          // Clear any existing content
+          while (videoRef.current.firstChild) {
+            videoRef.current.removeChild(videoRef.current.firstChild);
+          }
+
+          // Add the source element to the video
+          videoRef.current.appendChild(sourceElement);
+          videoRef.current.load();
+
+          mobileLog('Added source element with video/webm type');
+
+          setVideoSrc(recordedVideo);
+        } else {
+          mobileLog('Video ref not available');
+        }
+      } catch (error) {
+        if (error instanceof Error) {
+          mobileLog(`Error setting up video source: ${error.message}`);
+        } else {
+          mobileLog('Error setting up video source: Unknown error');
+        }
+      }
     }
-
-    // Clear previous URL
-    if (videoSrc) {
-      URL.revokeObjectURL(videoSrc);
-      setVideoSrc(null);
-    }
-
-    mobileLog('Cleared previous metadata and state');
-
-    // Get recorded video URL from session storage
-    const recordedVideo = sessionStorage.getItem('recordedVideo');
-    if (!recordedVideo) {
-      mobileLog('No video found in sessionStorage');
-      return;
-    }
-
-    // For simplicity, just use the URL directly first
-    setVideoSrc(recordedVideo);
-    mobileLog('Set video source directly from sessionStorage');
-
     // Cleanup function
     return () => {
       if (videoSrc) {
