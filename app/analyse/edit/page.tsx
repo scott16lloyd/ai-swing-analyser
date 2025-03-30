@@ -72,7 +72,41 @@ function EditPage() {
     };
   }, []);
 
-  // Split the logic into two separate useEffects
+  useEffect(() => {
+    if (!videoSrc || !videoRef.current) return;
+
+    // Clean up any existing sources
+    while (videoRef.current.firstChild) {
+      videoRef.current.removeChild(videoRef.current.firstChild);
+    }
+
+    // Create source element
+    const source = document.createElement('source');
+    source.type = 'video/mp4';
+    source.src = videoSrc;
+
+    // Append source to video element
+    videoRef.current.appendChild(source);
+
+    // Load the video
+    videoRef.current.load();
+
+    // If we were playing before, resume playback
+    if (isPlaying) {
+      videoRef.current
+        .play()
+        .catch((err) => console.error('Error playing video:', err));
+    }
+
+    return () => {
+      // Clean up source elements when unmounting or when source changes
+      if (videoRef.current) {
+        while (videoRef.current.firstChild) {
+          videoRef.current.removeChild(videoRef.current.firstChild);
+        }
+      }
+    };
+  }, [videoSrc, isPlaying]);
 
   // First useEffect: Just handle getting the video source
   useEffect(() => {
@@ -437,7 +471,6 @@ function EditPage() {
           <div className="flex relative mb-4 rounded-lg overflow-hidden h-fit">
             <video
               ref={videoRef}
-              src={videoSrc}
               className="w-full h-fit object-contain rounded-lg"
               onTimeUpdate={handleTimeUpdate}
               onEnded={handleVideoEnded}
