@@ -163,7 +163,7 @@ function EditPage() {
         }
       };
     }
-  }, [videoSrc, videoDuration]); // This effect runs whenever videoSrc changes
+  }, [videoSrc, videoDuration]); // This effect runs whenever videoSrc change
 
   // Update current time as video plays
   const handleTimeUpdate = useCallback(() => {
