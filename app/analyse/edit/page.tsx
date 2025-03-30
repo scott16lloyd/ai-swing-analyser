@@ -142,30 +142,28 @@ function EditPage() {
       });
 
     // Method 2: Wait for the video element's metadata to load
-    const handleMetadata = () => {
+    const handleTimeUpdate = () => {
       if (videoRef.current && videoRef.current.duration) {
         const duration = videoRef.current.duration;
-        mobileLog(`Video element duration from event: ${duration}`);
-        if (isFinite(duration) && duration > 0) {
+        if (isFinite(duration) && duration > 0 && videoDuration <= 0) {
+          console.log(`Duration detected from timeupdate: ${duration}`);
           setVideoDuration(duration);
           setEndTime(duration);
           setIsLoading(false);
+          videoRef.current.removeEventListener('timeupdate', handleTimeUpdate);
         }
       }
     };
 
     if (videoRef.current) {
-      videoRef.current.addEventListener('loadedmetadata', handleMetadata);
-      videoRef.current.addEventListener('durationchange', handleMetadata);
+      videoRef.current.addEventListener('timeupdate', handleTimeUpdate);
+      return () => {
+        if (videoRef.current) {
+          videoRef.current.removeEventListener('timeupdate', handleTimeUpdate);
+        }
+      };
     }
-
-    return () => {
-      if (videoRef.current) {
-        videoRef.current.removeEventListener('loadedmetadata', handleMetadata);
-        videoRef.current.removeEventListener('durationchange', handleMetadata);
-      }
-    };
-  }, [videoSrc]); // This effect runs whenever videoSrc changes
+  }, [videoSrc, videoDuration]); // This effect runs whenever videoSrc changes
 
   // Update current time as video plays
   const handleTimeUpdate = useCallback(() => {
