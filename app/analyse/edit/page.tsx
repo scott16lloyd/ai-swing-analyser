@@ -435,12 +435,17 @@ function EditPage() {
         <>
           {/* Video preview */}
           <div className="flex relative mb-4 rounded-lg overflow-hidden h-fit">
-            <img
+            <video
+              ref={videoRef}
               src={videoSrc}
               className="w-full h-fit object-contain rounded-lg"
               onTimeUpdate={handleTimeUpdate}
               onEnded={handleVideoEnded}
               onClick={handlePlayPause}
+              preload="metadata"
+              playsInline
+              disablePictureInPicture
+              controlsList="noplaybackrate nofullscreen"
               onLoadedMetadata={() => {
                 mobileLog(
                   `onLoadedMetadata fired, duration: ${videoRef.current?.duration}`
