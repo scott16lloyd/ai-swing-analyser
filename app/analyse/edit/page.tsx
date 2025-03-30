@@ -445,7 +445,7 @@ function EditPage() {
               preload="metadata"
               playsInline
               disablePictureInPicture
-              controlsList="noplaybackrate nofullscreen"
+              webkit-playsinline="true"
               onLoadedMetadata={() => {
                 mobileLog(
                   `onLoadedMetadata fired, duration: ${videoRef.current?.duration}`
