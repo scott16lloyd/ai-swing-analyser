@@ -48,7 +48,7 @@ function AnalysePage() {
             }
           }
           // Create new blob and navigate to edit page
-          const blob = new Blob([data], { type: 'video/webm' });
+          const blob = new Blob([data], { type: 'video/mp4' });
 
           // Create a clean blob URL without query parameters
           const videoUrl = URL.createObjectURL(blob);
@@ -88,7 +88,7 @@ function AnalysePage() {
   const handleDownload = useCallback(() => {
     if (recordedChunks.length) {
       const blob = new Blob(recordedChunks, {
-        type: 'video/webm',
+        type: 'video/mp4',
       });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');

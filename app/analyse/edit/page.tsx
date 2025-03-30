@@ -115,7 +115,7 @@ function EditPage() {
         // Use the source element for iOS comptatability
         if (videoRef.current) {
           const sourceElement = document.createElement('source');
-          sourceElement.type = 'video/webm';
+          sourceElement.type = 'video/mp4';
           sourceElement.src = recordedVideo;
 
           // Clear any existing content
@@ -127,7 +127,7 @@ function EditPage() {
           videoRef.current.appendChild(sourceElement);
           videoRef.current.load();
 
-          mobileLog('Added source element with video/webm type');
+          mobileLog('Added source element with video/mp4 type');
 
           setVideoSrc(recordedVideo);
         } else {
