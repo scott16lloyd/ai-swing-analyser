@@ -2,6 +2,7 @@
 import React, { useRef, useState, useCallback, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Webcam from 'react-webcam';
+import { getSupportedMimeType } from '@/lib/videoUtils';
 
 function AnalysePage() {
   // Webcam component
@@ -15,8 +16,9 @@ function AnalysePage() {
   const handleStartCaptureClick = useCallback(() => {
     setCapturing(true);
     if (webcamRef.current && webcamRef.current.stream) {
+      const mimeType = getSupportedMimeType();
       mediaRecorderRef.current = new MediaRecorder(webcamRef.current.stream, {
-        mimeType: 'video/webm',
+        mimeType: mimeType,
       });
 
       mediaRecorderRef.current?.addEventListener(
@@ -48,11 +50,14 @@ function AnalysePage() {
             }
           }
           // Create new blob and navigate to edit page
-          const blob = new Blob([data], { type: 'video/mp4' });
+          const blob = new Blob([data], { type: data.type });
 
           // Create a clean blob URL without query parameters
           const videoUrl = URL.createObjectURL(blob);
           console.log('Created new blob URL:', videoUrl);
+
+          // Set Mime type
+          sessionStorage.setItem('videoMimeType', data.type);
 
           // Set a refresh flag
           sessionStorage.setItem('needsRefresh', 'true');

@@ -88,59 +88,29 @@ function EditPage() {
     // Clear previous video
     if (videoRef.current) {
       videoRef.current.pause();
-      // Remove all existing source elements
-      while (videoRef.current.firstChild) {
-        videoRef.current.removeChild(videoRef.current.firstChild);
-      }
-
       videoRef.current.removeAttribute('src');
       videoRef.current.load();
-
-      // Clear previous URL
-      if (videoSrc) {
-        URL.revokeObjectURL(videoSrc);
-        setVideoSrc(null);
-      }
-
-      mobileLog('Cleared previous metadata and state');
-
-      // Get recorded video URL from session storage
-      const recordedVideo = sessionStorage.getItem('recordedVideo');
-      if (!recordedVideo) {
-        mobileLog('No video found in sessionStorage');
-        return;
-      }
-
-      try {
-        // Use the source element for iOS comptatability
-        if (videoRef.current) {
-          const sourceElement = document.createElement('source');
-          sourceElement.type = 'video/mp4';
-          sourceElement.src = recordedVideo;
-
-          // Clear any existing content
-          while (videoRef.current.firstChild) {
-            videoRef.current.removeChild(videoRef.current.firstChild);
-          }
-
-          // Add the source element to the video
-          videoRef.current.appendChild(sourceElement);
-          videoRef.current.load();
-
-          mobileLog('Added source element with video/mp4 type');
-
-          setVideoSrc(recordedVideo);
-        } else {
-          mobileLog('Video ref not available');
-        }
-      } catch (error) {
-        if (error instanceof Error) {
-          mobileLog(`Error setting up video source: ${error.message}`);
-        } else {
-          mobileLog('Error setting up video source: Unknown error');
-        }
-      }
     }
+
+    // Clear previous URL
+    if (videoSrc) {
+      URL.revokeObjectURL(videoSrc);
+      setVideoSrc(null);
+    }
+
+    mobileLog('Cleared previous metadata and state');
+
+    // Get recorded video URL from session storage
+    const recordedVideo = sessionStorage.getItem('recordedVideo');
+    if (!recordedVideo) {
+      mobileLog('No video found in sessionStorage');
+      return;
+    }
+
+    // For simplicity, just use the URL directly first
+    setVideoSrc(recordedVideo);
+    mobileLog('Set video source directly from sessionStorage');
+
     // Cleanup function
     return () => {
       if (videoSrc) {
@@ -193,7 +163,7 @@ function EditPage() {
         }
       };
     }
-  }, [videoSrc, videoDuration]); // This effect runs whenever videoSrc change
+  }, [videoSrc]); // This effect runs whenever videoSrc changes
 
   // Update current time as video plays
   const handleTimeUpdate = useCallback(() => {
@@ -467,6 +437,7 @@ function EditPage() {
           <div className="flex relative mb-4 rounded-lg overflow-hidden h-fit">
             <video
               ref={videoRef}
+              src={videoSrc}
               className="w-full h-fit object-contain rounded-lg"
               onTimeUpdate={handleTimeUpdate}
               onEnded={handleVideoEnded}
