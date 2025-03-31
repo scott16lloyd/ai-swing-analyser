@@ -444,6 +444,9 @@ function EditPage() {
               onClick={handlePlayPause}
               preload="metadata"
               playsInline
+              muted
+              controls={false}
+              autoPlay={false}
               disablePictureInPicture
               webkit-playsinline="true"
               onLoadedMetadata={() => {
