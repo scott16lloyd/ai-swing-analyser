@@ -39,28 +39,50 @@ function AnalysePage() {
         if (!capturing) {
           console.log('Creating blob and navigating');
 
-          // First, clean up any previous blob URLs
-          const prevVideoUrl = sessionStorage.getItem('recordedVideo');
-          if (prevVideoUrl && prevVideoUrl.startsWith('blob:')) {
-            try {
-              URL.revokeObjectURL(prevVideoUrl);
-              console.log('Revoked previous blob URL');
-            } catch (e) {
-              console.error('Failed to revoke URL:', e);
-            }
-          }
           // Create new blob, convert to data URI and navigate to edit page
           const blob = new Blob([data], { type: data.type });
-          const reader = new FileReader();
-          reader.onload = () => {
-            const dataUri = reader.result as string;
-            console.log('Created data URI, length: ', dataUri.length);
-            sessionStorage.setItem('videoMimeType', data.type);
-            sessionStorage.setItem('needsRefresh', 'true');
-            sessionStorage.setItem('recordedVideo', dataUri);
-            router.push('/analyse/edit');
+
+          // Store the blob in IndexedDB
+          const request = indexedDB.open('VideoDatabase', 1);
+
+          request.onupgradeneeded = (event) => {
+            const db = (event.target as IDBOpenDBRequest).result;
+            if (!db.objectStoreNames.contains('videos')) {
+              db.createObjectStore('videos', { keyPath: 'id' });
+            }
           };
-          reader.readAsDataURL(blob);
+
+          request.onsuccess = (event) => {
+            const db = (event.target as IDBOpenDBRequest).result;
+            const transaction = db.transaction(['videos'], 'readwrite');
+            const store = transaction.objectStore('videos');
+
+            // Store the video with ID 'currentVideo'
+            store.put({ id: 'currentVideo', blob: blob, type: data.type });
+
+            transaction.oncomplete = () => {
+              sessionStorage.setItem('videoMimeType', data.type);
+              sessionStorage.setItem('needsRefresh', 'true');
+              sessionStorage.setItem('videoStored', 'true'); // Flag to indicate video is in IndexedDB
+              router.push('/analyse/edit');
+            };
+          };
+
+          request.onerror = (event) => {
+            console.error('IndexedDB error:', event);
+            // Fallback for very small videos
+            try {
+              const reader = new FileReader();
+              reader.onload = () => {
+                const dataUri = reader.result as string;
+                sessionStorage.setItem('recordedVideo', dataUri);
+                router.push('/analyse/edit');
+              };
+              reader.readAsDataURL(blob);
+            } catch (e) {
+              console.error('Failed to store video: ', e);
+            }
+          };
         }
       }
     },

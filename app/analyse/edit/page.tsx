@@ -100,16 +100,46 @@ function EditPage() {
 
     mobileLog('Cleared previous metadata and state');
 
-    // Get recorded video URL from session storage
-    const recordedVideo = sessionStorage.getItem('recordedVideo');
-    if (!recordedVideo) {
-      mobileLog('No video found in sessionStorage');
-      return;
-    }
+    const videoStored = sessionStorage.getItem('videoStored');
 
-    // For simplicity, just use the URL directly first
-    setVideoSrc(recordedVideo);
-    mobileLog('Set video source directly from sessionStorage');
+    if (videoStored === 'true') {
+      // Get from IndexedDB
+      const request = indexedDB.open('VideoDatabase', 1);
+
+      request.onsuccess = (event) => {
+        const db = (event.target as IDBOpenDBRequest).result;
+        const transaction = db.transaction(['videos'], 'readonly');
+        const store = transaction.objectStore('videos');
+        const getRequest = store.get('currentVideo');
+
+        getRequest.onsuccess = () => {
+          if (getRequest.result) {
+            const blob = getRequest.result.blob;
+            const url = URL.createObjectURL(blob);
+            setVideoSrc(url);
+            mobileLog('Set video source from IndexedDB');
+          } else {
+            mobileLog('No video found in IndexedDB');
+          }
+        };
+
+        getRequest.onerror = (error) => {
+          mobileLog(`Error retrieving from IndexedDB: ${error}`);
+        };
+      };
+      request.onerror = (event) => {
+        mobileLog(`Error opening IndexedDB: ${event}`);
+      };
+    } else {
+      // Try sessionStorage as fallback
+      const recordedVideo = sessionStorage.getItem('recordedVideo');
+      if (recordedVideo) {
+        setVideoSrc(recordedVideo);
+        mobileLog('Set video source from sessionStorage');
+      } else {
+        mobileLog('No video found in storage');
+      }
+    }
 
     // Cleanup function
     return () => {
