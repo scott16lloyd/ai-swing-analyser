@@ -464,11 +464,11 @@ function EditPage() {
       {videoSrc ? (
         <>
           {/* Video preview */}
-          <div className="flex relative mb-4 rounded-lg overflow-hidden h-fit">
+          <div className="flex justify-center items-center relative mb-4 rounded-lg overflow-hidden h-[70vh]">
             <video
               ref={videoRef}
               src={videoSrc}
-              className="w-full h-fit object-contain rounded-lg"
+              className="max-w-full max-h-fit object-contain rounded-lg"
               onTimeUpdate={handleTimeUpdate}
               onEnded={handleVideoEnded}
               onClick={handlePlayPause}
@@ -492,11 +492,6 @@ function EditPage() {
                   setEndTime(videoRef.current.duration);
                   setIsLoading(false);
                 }
-              }}
-              style={{
-                width: '100%',
-                maxHeight: '80vh', // Adjust based on your layout needs
-                objectFit: 'contain', // This is crucial for maintaining aspect ratio
               }}
             />
           </div>
