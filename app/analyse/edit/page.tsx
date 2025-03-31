@@ -3,6 +3,9 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import getBlobDuration from 'get-blob-duration';
 import { useRouter } from 'next/navigation';
+import { Button } from '@/components/ui/button';
+import { Activity } from 'lucide-react';
+import { uploadVideoToGCS } from '@/app/actions/storage';
 
 function EditPage() {
   const [videoSrc, setVideoSrc] = useState<string | null>(null);
@@ -15,6 +18,10 @@ function EditPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [mobileDebugLogs, setMobileDebugLogs] = useState<string[]>([]);
   const [showDebugger, setShowDebugger] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [uploadedVideoUrl, setUploadedVideoUrl] = useState<string | null>(null);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -459,6 +466,81 @@ function EditPage() {
     }
   }, [startTime]);
 
+  // Upload trimmed video to GCS
+  async function uploadTrimmedVideo() {
+    // Reset states
+    setIsUploading(true);
+    setUploadProgress(0);
+    setUploadError(null);
+    setUploadedVideoUrl(null);
+
+    try {
+      // 1. Show inital progress
+      setUploadProgress(10);
+
+      // 2. Get blob from video source URL
+      if (!videoSrc) {
+        throw new Error('No videoSrc available to upload');
+      }
+      const response = await fetch(videoSrc);
+      if (!response.ok) {
+        throw new Error('Failed to fetch video data');
+      }
+
+      setUploadProgress(30);
+      const videoBlob = await response.blob();
+
+      // 3. Create filename
+      const timestamp = Date.now();
+      const extension = videoBlob.type.includes('mp4') ? 'mp4' : 'webm';
+      const fileName = `trim-${timestamp}.${extension}`;
+
+      // 4. Convert Blob to base64
+      setUploadProgress(50);
+      const base64Data = await blobToBase64(videoBlob);
+
+      // 5. Upload video
+      setUploadProgress(70);
+      const result = await uploadVideoToGCS(base64Data, {
+        fileName,
+        contentType: videoBlob.type,
+        metadata: {
+          duration: videoDuration,
+          trimStart: startTime,
+          trimEnd: endTime,
+          trimmed: true,
+          width: videoRef.current?.videoWidth,
+          height: videoRef.current?.videoHeight,
+        },
+      });
+
+      // 6. handle result
+      setUploadProgress(100);
+
+      if (result.success) {
+        setUploadedVideoUrl(result.publicUrl);
+        // TODO: Direct to analysis results page
+      } else {
+        throw new Error(result.error || 'Upload failed');
+      }
+    } catch (error) {
+      console.error('Error uploading video:', error);
+      setUploadError((error as Error).message);
+    } finally {
+      setIsUploading(false);
+    }
+  }
+
+  // Helper function to convert Blob to base64
+  function blobToBase64(blob: Blob): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result as string);
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+  }
+
   return (
     <div className="fixed inset-0 flex flex-col bg-black overflow-hidden touch-none bg-opacity-90">
       {videoSrc ? (
@@ -607,6 +689,47 @@ function EditPage() {
                 style={{ left: `${(currentTime / videoDuration) * 100}%` }}
               ></div>
             </div>
+            {/* Analyse button */}
+            {/* Add this to your JSX where the analyse button should be */}
+            <Button
+              onClick={uploadTrimmedVideo}
+              disabled={isUploading || !videoSrc || isLoading}
+            >
+              {isUploading ? 'Uploading...' : 'Analyse Swing'}
+            </Button>
+
+            {/* Loading indicator */}
+            {isUploading && (
+              <div className="mt-4">
+                <div className="w-full bg-gray-200 rounded-full h-2.5">
+                  <div
+                    className="bg-blue-600 h-2.5 rounded-full transition-all duration-300"
+                    style={{ width: `${uploadProgress}%` }}
+                  ></div>
+                </div>
+                <p className="text-sm text-gray-600 mt-1">
+                  {uploadProgress < 100
+                    ? 'Uploading video...'
+                    : 'Processing complete!'}
+                </p>
+              </div>
+            )}
+
+            {/* Error message */}
+            {uploadError && (
+              <div className="mt-4 p-3 bg-red-100 border border-red-400 text-red-700 rounded">
+                <p>Error: {uploadError}</p>
+              </div>
+            )}
+
+            {/* Success message */}
+            {uploadedVideoUrl && (
+              <div className="mt-4 p-3 bg-green-100 border border-green-400 text-green-700 rounded">
+                <p>
+                  Video uploaded successfully! Your analysis will be ready soon.
+                </p>
+              </div>
+            )}
           </div>
 
           {/* Action buttons */}
