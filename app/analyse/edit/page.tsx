@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Activity } from 'lucide-react';
 import { uploadVideoToGCS } from '@/app/actions/storage';
+import { standardTrimVideo } from '@/lib/videoUtils';
 
 function EditPage() {
   const [videoSrc, setVideoSrc] = useState<string | null>(null);
@@ -438,20 +439,6 @@ function EditPage() {
     [startTime, endTime, videoDuration]
   );
 
-  const handleTrim = useCallback(() => {
-    if (!videoSrc) return;
-
-    const trimInfo = {
-      videoUrl: videoSrc,
-      startTime,
-      endTime,
-      duration: endTime - startTime,
-    };
-
-    sessionStorage.setItem('trimInfo', JSON.stringify(trimInfo));
-    router.push('/analyse/result');
-  }, [videoSrc, startTime, endTime, router]);
-
   const handleVideoEnded = useCallback(() => {
     mobileLog('Video playback ended');
 
@@ -475,56 +462,109 @@ function EditPage() {
     setUploadedVideoUrl(null);
 
     try {
-      // 1. Show inital progress
+      // 1. Validate we have what we need
+      if (!videoRef.current || !videoSrc) {
+        throw new Error('Video not available for trimming');
+      }
+
       setUploadProgress(10);
 
-      // 2. Get blob from video source URL
-      if (!videoSrc) {
-        throw new Error('No videoSrc available to upload');
-      }
-      const response = await fetch(videoSrc);
-      if (!response.ok) {
-        throw new Error('Failed to fetch video data');
+      // 2. Set up video and canvas for processing
+      const sourceVideo = document.createElement('video');
+      sourceVideo.src = videoSrc;
+      sourceVideo.muted = true;
+
+      // Wait for video metadata to load
+      await new Promise((resolve, reject) => {
+        sourceVideo.onloadedmetadata = resolve;
+        sourceVideo.onerror = reject;
+        setTimeout(resolve, 3000); // Timeout after 3 seconds
+      });
+
+      // Create a canvas with the same dimensions as the video
+      const canvas = document.createElement('canvas');
+      canvas.width = sourceVideo.videoWidth || 640;
+      canvas.height = sourceVideo.videoHeight || 480;
+      const ctx = canvas.getContext('2d');
+
+      if (!ctx) {
+        throw new Error('Could not create canvas context');
       }
 
-      setUploadProgress(30);
-      const videoBlob = await response.blob();
+      setUploadProgress(20);
 
-      // 3. Create filename
+      // 3. Perform the trimming operation
+      console.log(`Starting trim operation from ${startTime}s to ${endTime}s`);
+
+      // Progress update during trimming
+      const trimDuration = endTime - startTime;
+      const progressInterval = setInterval(() => {
+        if (sourceVideo.currentTime > startTime) {
+          const progress = Math.min(
+            70,
+            20 + ((sourceVideo.currentTime - startTime) / trimDuration) * 50
+          );
+          setUploadProgress(Math.floor(progress));
+        }
+      }, 500);
+
+      // Call the standardTrimVideo function
+      const trimmedBlob = await standardTrimVideo(
+        sourceVideo,
+        canvas,
+        ctx,
+        startTime,
+        endTime
+      );
+
+      clearInterval(progressInterval);
+      setUploadProgress(75);
+
+      // 4. Convert Blob to base64 for upload
+      const base64Data = await blobToBase64(trimmedBlob);
+
+      // 5. Create filename
       const timestamp = Date.now();
-      const extension = videoBlob.type.includes('mp4') ? 'mp4' : 'webm';
+      const extension = trimmedBlob.type.includes('mp4') ? 'mp4' : 'webm';
       const fileName = `trim-${timestamp}.${extension}`;
 
-      // 4. Convert Blob to base64
-      setUploadProgress(50);
-      const base64Data = await blobToBase64(videoBlob);
+      setUploadProgress(85);
 
-      // 5. Upload video
-      setUploadProgress(70);
+      // 6. Upload the trimmed video
       const result = await uploadVideoToGCS(base64Data, {
         fileName,
-        contentType: videoBlob.type,
+        contentType: trimmedBlob.type,
         metadata: {
-          duration: videoDuration,
-          trimStart: startTime,
-          trimEnd: endTime,
-          trimmed: true,
-          width: videoRef.current?.videoWidth,
-          height: videoRef.current?.videoHeight,
+          duration: trimDuration.toString(),
+          originalStart: startTime.toString(),
+          originalEnd: endTime.toString(),
+          trimmed: 'true',
+          width: canvas.width.toString(),
+          height: canvas.height.toString(),
         },
       });
 
-      // 6. handle result
       setUploadProgress(100);
 
       if (result.success) {
         setUploadedVideoUrl(result.publicUrl);
-        // TODO: Direct to analysis results page
+
+        // Store trim information for reference
+        const trimInfo = {
+          videoUrl: result.publicUrl,
+          startTime: 0, // Since we've already trimmed, the new video starts at 0
+          endTime: trimDuration,
+          duration: trimDuration,
+        };
+        sessionStorage.setItem('trimInfo', JSON.stringify(trimInfo));
+
+        // Redirect to results page
+        // router.push('/analyse/result');
       } else {
         throw new Error(result.error || 'Upload failed');
       }
     } catch (error) {
-      console.error('Error uploading video:', error);
+      console.error('Error creating or uploading trimmed video:', error);
       setUploadError((error as Error).message);
     } finally {
       setIsUploading(false);
@@ -732,21 +772,6 @@ function EditPage() {
             )}
           </div>
 
-          {/* Action buttons */}
-          <div className="fixed bottom-4 left-0 right-0 flex justify-center space-x-6 px-4">
-            <button
-              onClick={() => router.back()}
-              className="px-6 py-2 bg-gray-200/90 rounded-full text-gray-800 font-medium"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={handleTrim}
-              className="px-6 py-2 bg-blue-500 text-white rounded-full font-medium"
-            >
-              Trim
-            </button>
-          </div>
           {showDebugger && (
             <div className="fixed bottom-20 left-0 right-0 max-h-48 overflow-y-auto bg-black/80 text-white text-xs p-2 z-50">
               <div className="mb-2 flex justify-between">
