@@ -493,6 +493,11 @@ function EditPage() {
                   setIsLoading(false);
                 }
               }}
+              style={{
+                width: '100%',
+                maxHeight: '80vh', // Adjust based on your layout needs
+                objectFit: 'contain', // This is crucial for maintaining aspect ratio
+              }}
             />
           </div>
           {/* Play/Pause button */}
