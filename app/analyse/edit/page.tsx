@@ -460,11 +460,11 @@ function EditPage() {
   }, [startTime]);
 
   return (
-    <div className="fixed inset-0 flex flex-col p-4 bg-black bg-opacity-90">
+    <div className="fixed inset-0 flex flex-col bg-black overflow-hidden touch-none bg-opacity-90">
       {videoSrc ? (
         <>
           {/* Video preview */}
-          <div className="flex justify-center items-center relative mb-4 rounded-lg overflow-hidden h-[70vh]">
+          <div className="flex-1 flex justify-center items-center relative mb-4 rounded-lg overflow-hidden">
             <video
               ref={videoRef}
               src={videoSrc}
