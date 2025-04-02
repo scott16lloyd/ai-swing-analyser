@@ -498,6 +498,12 @@ function EditPage() {
 
       // Progress update during trimming
       const trimDuration = endTime - startTime;
+      if (trimDuration > 8) {
+        setUploadError(
+          'Video must be less than 8 seconds for analysis, please trim the video shorter.'
+        );
+        return;
+      }
       const progressInterval = setInterval(() => {
         if (sourceVideo.currentTime > startTime) {
           const progress = Math.min(
