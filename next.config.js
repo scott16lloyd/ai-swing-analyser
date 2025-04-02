@@ -3,7 +3,7 @@
 module.exports = {
   experimental: {
     serverActions: {
-      bodySizeLimit: '20mb',
+      bodySizeLimit: '40mb',
     },
   },
 };
