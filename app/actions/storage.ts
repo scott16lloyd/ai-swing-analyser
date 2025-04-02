@@ -2,6 +2,8 @@
 
 import { Storage } from '@google-cloud/storage';
 import { revalidatePath } from 'next/cache';
+import { FFmpeg } from '@ffmpeg/ffmpeg';
+import { fetchFile, toBlobURL } from '@ffmpeg/util';
 
 export interface SignedUrlRequest {
   filename: string;
@@ -469,6 +471,11 @@ export async function uploadVideoToGCS(
   const contentType = options.contentType || 'video/mp4';
   const metadata = options.metadata || {};
 
+  // Fixed compression settings - no user control
+  const crf = 32; // Low quality (second lowest)
+  const preset = 'veryfast'; // For faster processing
+  const width = 640; // Lower resolution
+
   // Generate a unique filename if not provided
   let fileName = options.fileName;
   if (!fileName) {
@@ -517,6 +524,34 @@ export async function uploadVideoToGCS(
       };
     }
 
+    // Convert base64 to Buffer
+    // Remove the data URL prefix if present (e.g., "data:video/mp4;base64,")
+    const base64WithoutPrefix = base64Data.split(',')[1] || base64Data;
+    let videoBuffer = Buffer.from(base64WithoutPrefix, 'base64');
+
+    // Compress video if requested
+    try {
+      videoBuffer = await compressVideo(videoBuffer, {
+        crf,
+        preset,
+        width,
+        fps: 30,
+        outputFormat: fileName.endsWith('.mp4') ? 'mp4' : 'webm',
+      });
+
+      // Update metadata to indicate compression
+      metadata.compressed = 'true';
+      metadata.compressionCrf = crf.toString();
+      metadata.compressionPreset = preset;
+      metadata.compressionWidth = width.toString();
+      metadata.compressionFps = '30';
+    } catch (compressError) {
+      console.error('Error compressing video:', compressError);
+      // Continue with original video if compression fails
+      metadata.compressionFailed = 'true';
+      metadata.compressionError = (compressError as Error).message;
+    }
+
     // Initialise GCS
     const storage = new Storage({
       credentials,
@@ -525,11 +560,6 @@ export async function uploadVideoToGCS(
 
     const bucket = storage.bucket(bucketName);
     const file = bucket.file(fullPath);
-
-    // Convert base64 to Buffer
-    // Remove the data URL prefix if present (e.g., "data:video/mp4;base64,")
-    const base64WithoutPrefix = base64Data.split(',')[1] || base64Data;
-    const videoBuffer = Buffer.from(base64WithoutPrefix, 'base64');
 
     // Upload the file
     await file.save(videoBuffer, {
@@ -555,5 +585,90 @@ export async function uploadVideoToGCS(
       publicUrl: '',
       error: (error as Error).message,
     };
+  }
+}
+
+/**
+ * Compresses a video using FFmpeg
+ *
+ * @param videoBuffer - The video buffer to compress
+ * @param options - Compression options
+ * @returns - Compressed video buffer
+ */
+async function compressVideo(
+  videoBuffer: Buffer,
+  options: {
+    crf: number;
+    preset: string;
+    width: number;
+    fps: number;
+    outputFormat: 'mp4' | 'webm';
+  }
+): Promise<Buffer> {
+  // Create a new FFmpeg instance
+  const ffmpeg = new FFmpeg();
+
+  // Load FFmpeg core
+  const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
+  await ffmpeg.load({
+    coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
+    wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+  });
+
+  try {
+    // Create input and output file names
+    const inputFileName = 'input.' + options.outputFormat;
+    const outputFileName = 'output.' + options.outputFormat;
+
+    // Convert Buffer to Uint8Array that FFmpeg can accept
+    const uint8Array = new Uint8Array(
+      videoBuffer.buffer,
+      videoBuffer.byteOffset,
+      videoBuffer.byteLength
+    );
+
+    // Write the input file to FFmpeg's virtual file system
+    await ffmpeg.writeFile(inputFileName, uint8Array);
+
+    // Determine codec based on format
+    const videoCodec =
+      options.outputFormat === 'mp4' ? 'libx264' : 'libvpx-vp9';
+
+    // Build FFmpeg command with 30fps
+    let args = [
+      '-i',
+      inputFileName,
+      '-c:v',
+      videoCodec,
+      '-crf',
+      options.crf.toString(),
+      '-preset',
+      options.preset,
+      '-vf',
+      `scale=${options.width}:-2,fps=${options.fps}`, // Scale and set framerate
+      '-c:a',
+      options.outputFormat === 'mp4' ? 'aac' : 'libopus',
+      '-b:a',
+      '128k', // Audio bitrate
+      '-movflags',
+      'faststart', // Optimize for web playback
+      outputFileName,
+    ];
+
+    // Run the FFmpeg command
+    await ffmpeg.exec(args);
+
+    // Read the output file
+    const data = await ffmpeg.readFile(outputFileName);
+
+    // Convert Uint8Array to Buffer
+    if (data instanceof Uint8Array) {
+      return Buffer.from(data);
+    } else {
+      throw new Error('Unexpected data type returned from FFmpeg');
+    }
+  } finally {
+    // Clean up FFmpeg instance
+    await ffmpeg.terminate();
   }
 }

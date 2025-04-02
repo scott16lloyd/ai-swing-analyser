@@ -23,6 +23,8 @@ function EditPage() {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploadedVideoUrl, setUploadedVideoUrl] = useState<string | null>(null);
+  const [compressionEnabled, setCompressionEnabled] = useState(true);
+  const [compressionQuality, setCompressionQuality] = useState('medium');
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -453,6 +455,20 @@ function EditPage() {
     }
   }, [startTime]);
 
+  const getCompressionSettings = () => {
+    // Map friendly names to actual CRF values (lower is better quality but larger size)
+    switch (compressionQuality) {
+      case 'high':
+        return { crf: 23, preset: 'medium' };
+      case 'medium':
+        return { crf: 28, preset: 'veryfast' };
+      case 'low':
+        return { crf: 32, preset: 'ultrafast' };
+      default:
+        return { crf: 28, preset: 'veryfast' };
+    }
+  };
+
   // Upload trimmed video to GCS
   async function uploadTrimmedVideo() {
     // Reset states
@@ -535,6 +551,9 @@ function EditPage() {
       const fileName = `trim-${timestamp}.${extension}`;
 
       setUploadProgress(85);
+
+      // Get compression settings
+      const { crf, preset } = getCompressionSettings();
 
       // 6. Upload the trimmed video
       const result = await uploadVideoToGCS(base64Data, {
