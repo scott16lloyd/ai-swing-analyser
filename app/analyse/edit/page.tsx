@@ -565,18 +565,20 @@ function EditPage() {
         '-i',
         inputFileName,
         '-c:v',
-        'libx265', // Software HEVC encoder (since videotoolbox is hardware-specific)
-        '-b:v',
-        '6000k',
-        '-tag:v',
-        'hvc1', // Important tag for iOS compatibility
-        '-x265-params',
-        'log-level=error', // Reduce console noise
+        'libx264',
+        '-profile:v',
+        'baseline',
+        '-level',
+        '3.0',
+        '-pix_fmt',
+        'yuv420p',
         '-preset',
-        'ultrafast', // Use fastest encoding setting for browser environment
-        '-an', // Remove audio as we did before
-        '-f',
-        'mp4', // Specify format explicitly
+        'fast',
+        '-crf',
+        '28',
+        '-an', // Remove audio
+        '-movflags',
+        '+faststart',
         outputFileName,
       ]);
 
