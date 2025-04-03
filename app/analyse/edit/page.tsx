@@ -643,7 +643,7 @@ function EditPage() {
       );
 
       // Redirect to results page
-      // router.push('/analyse/result');
+      router.push('/analyse/results');
     } catch (error) {
       console.error('Error creating or uploading trimmed video:', error);
       setUploadError((error as Error).message);
@@ -651,16 +651,6 @@ function EditPage() {
       clearInterval(simulationInterval);
       setIsUploading(false);
     }
-  }
-
-  // Helper function to convert Blob to base64
-  function blobToBase64(blob: Blob): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onloadend = () => resolve(reader.result as string);
-      reader.onerror = reject;
-      reader.readAsDataURL(blob);
-    });
   }
 
   return (
