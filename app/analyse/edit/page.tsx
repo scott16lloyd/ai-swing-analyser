@@ -566,13 +566,17 @@ function EditPage() {
         inputFileName,
         '-c:v',
         'libx264',
+        '-profile:v',
+        'main',
         '-crf',
         '28', // Higher value = more compression, lower quality
         '-preset',
         'fast',
         '-vf',
-        'scale=640:-2', // Resize to 640px width
+        'scale=640:-2,format=yuv420p', // Resize and ensure iOS compatible format
         '-an', // Remove audio
+        '-movflags',
+        '+faststart', // Optimize for web playback
         outputFileName,
       ]);
 
@@ -643,7 +647,7 @@ function EditPage() {
       );
 
       // Redirect to results page
-      router.push('/analyse/results');
+      // router.push('/analyse/results');
     } catch (error) {
       console.error('Error creating or uploading trimmed video:', error);
       setUploadError((error as Error).message);
