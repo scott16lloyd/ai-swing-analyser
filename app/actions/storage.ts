@@ -2,6 +2,10 @@
 
 import { Storage } from '@google-cloud/storage';
 import { revalidatePath } from 'next/cache';
+import ffmpeg from 'fluent-ffmpeg';
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
 
 export interface SignedUrlRequest {
   filename: string;
@@ -458,6 +462,9 @@ export async function uploadVideoToGCS(
     fileName?: string;
     contentType?: string;
     metadata?: Record<string, any>;
+    maxSizeMB?: number;
+    targetResolution?: string;
+    maxVideoDuration?: number;
   } = {}
 ): Promise<{
   success: boolean;
@@ -468,6 +475,9 @@ export async function uploadVideoToGCS(
   // Default options
   const contentType = options.contentType || 'video/mp4';
   const metadata = options.metadata || {};
+  const maxSizeMB = options.maxSizeMB || 5; // Default max size 10MB
+  const targetResolution = options.targetResolution || '640x360'; // Default 720p
+  const maxVideoDuration = options.maxVideoDuration || 8;
 
   // Generate a unique filename if not provided
   let fileName = options.fileName;
@@ -517,6 +527,65 @@ export async function uploadVideoToGCS(
       };
     }
 
+    // Convert base64 to Buffer
+    // Remove the data URL prefix if present (e.g., "data:video/mp4;base64,")
+    const base64WithoutPrefix = base64Data.split(',')[1] || base64Data;
+    const videoBuffer = Buffer.from(base64WithoutPrefix, 'base64');
+
+    // Create a temporary input file
+    const tempInputPath = path.join(os.tmpdir(), `input-${Date.now()}.mp4`);
+    const tempOutputPath = path.join(
+      os.tmpdir(),
+      `compressed-${Date.now()}.mp4`
+    );
+
+    // Write input buffer to temp file
+    fs.writeFileSync(tempInputPath, new Uint8Array(videoBuffer));
+
+    // Compress video using FFmpeg
+    await new Promise<void>((resolve, reject) => {
+      ffmpeg(tempInputPath)
+        .videoCodec('libx264')
+        .size(targetResolution)
+        .outputOptions([
+          '-crf 23', // Constant Rate Factor for compression (lower is better quality)
+          '-preset medium', // Compression preset
+          '-movflags',
+          '+faststart', // Optimize for web streaming
+          '-an', // Remove audio
+        ])
+        .toFormat('mp4')
+        .on('start', (commandLine) => {
+          console.log('Spawned FFmpeg with command: ' + commandLine);
+        })
+        .on('progress', (progress) => {
+          console.log('Processing: ' + progress.percent + '% done');
+        })
+        .on('end', () => {
+          console.log('Compression finished');
+          resolve();
+        })
+        .on('error', (err) => {
+          console.error('Error during compression:', err);
+          reject(err);
+        })
+        .save(tempOutputPath);
+    });
+
+    // Check file size
+    const stats = fs.statSync(tempOutputPath);
+    const fileSizeMB = stats.size / (1024 * 1024);
+
+    if (fileSizeMB > maxSizeMB) {
+      // If still too large, throw an error
+      fs.unlinkSync(tempInputPath);
+      fs.unlinkSync(tempOutputPath);
+      throw new Error(`Compressed video still exceeds ${maxSizeMB}MB limit`);
+    }
+
+    // Read compressed video buffer
+    const compressedVideoBuffer = fs.readFileSync(tempOutputPath);
+
     // Initialise GCS
     const storage = new Storage({
       credentials,
@@ -526,18 +595,21 @@ export async function uploadVideoToGCS(
     const bucket = storage.bucket(bucketName);
     const file = bucket.file(fullPath);
 
-    // Convert base64 to Buffer
-    // Remove the data URL prefix if present (e.g., "data:video/mp4;base64,")
-    const base64WithoutPrefix = base64Data.split(',')[1] || base64Data;
-    const videoBuffer = Buffer.from(base64WithoutPrefix, 'base64');
-
     // Upload the file
-    await file.save(videoBuffer, {
+    await file.save(compressedVideoBuffer, {
       metadata: {
-        contentType,
-        metadata,
+        contentType: 'video/mp4',
+        metadata: {
+          ...metadata,
+          originalSize: videoBuffer.length,
+          compressedSize: compressedVideoBuffer.length,
+        },
       },
     });
+
+    // Clean up temporary files
+    fs.unlinkSync(tempInputPath);
+    fs.unlinkSync(tempOutputPath);
 
     // Generate public URL
     const publicUrl = `https://storage.googleapis.com/${bucketName}/${fullPath}`;

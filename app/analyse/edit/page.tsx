@@ -5,7 +5,7 @@ import getBlobDuration from 'get-blob-duration';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Activity } from 'lucide-react';
-import { uploadVideoToGCS } from '@/app/actions/storage';
+import { uploadVideoToGCS, generateSignedUrl } from '@/app/actions/storage';
 import { standardTrimVideo } from '@/lib/videoUtils';
 
 function EditPage() {
@@ -461,13 +461,40 @@ function EditPage() {
     setUploadError(null);
     setUploadedVideoUrl(null);
 
+    // Track progress outside React state to avoid conflicts
+    let lastProgress = 0;
+
+    // Function to safely update progress (never go backwards)
+    const updateProgress = (newProgress: number): void => {
+      if (newProgress > lastProgress) {
+        lastProgress = newProgress;
+        setUploadProgress(Math.round(newProgress));
+      }
+    };
+
+    // Create smooth progress simulation
+    const simulationInterval = setInterval(() => {
+      // Different acceleration rates for different phases
+      if (lastProgress < 30) {
+        // Preparing phase - move a bit faster
+        updateProgress(lastProgress + 0.3);
+      } else if (lastProgress < 70) {
+        // Compression phase - move slower
+        updateProgress(lastProgress + 0.15);
+      } else if (lastProgress < 90) {
+        // Upload phase - move very slowly
+        updateProgress(lastProgress + 0.1);
+      } else if (lastProgress < 98) {
+        // Final phase - barely move
+        updateProgress(lastProgress + 0.05);
+      }
+    }, 200);
+
     try {
       // 1. Validate we have what we need
       if (!videoRef.current || !videoSrc) {
         throw new Error('Video not available for trimming');
       }
-
-      setUploadProgress(10);
 
       // 2. Set up video and canvas for processing
       const sourceVideo = document.createElement('video');
@@ -491,8 +518,6 @@ function EditPage() {
         throw new Error('Could not create canvas context');
       }
 
-      setUploadProgress(20);
-
       // 3. Perform the trimming operation
       console.log(`Starting trim operation from ${startTime}s to ${endTime}s`);
 
@@ -502,17 +527,9 @@ function EditPage() {
         setUploadError(
           'Video must be less than 8 seconds for analysis, please trim the video shorter.'
         );
+        setIsUploading(false);
         return;
       }
-      const progressInterval = setInterval(() => {
-        if (sourceVideo.currentTime > startTime) {
-          const progress = Math.min(
-            70,
-            20 + ((sourceVideo.currentTime - startTime) / trimDuration) * 50
-          );
-          setUploadProgress(Math.floor(progress));
-        }
-      }, 500);
 
       // Call the standardTrimVideo function
       const trimmedBlob = await standardTrimVideo(
@@ -523,23 +540,50 @@ function EditPage() {
         endTime
       );
 
-      clearInterval(progressInterval);
-      setUploadProgress(75);
+      updateProgress(30);
 
-      // 4. Convert Blob to base64 for upload
-      const base64Data = await blobToBase64(trimmedBlob);
+      // Compress the trimmed video before upload
+      console.log('Original size:', trimmedBlob.size / (1024 * 1024), 'MB');
 
-      // 5. Create filename
+      // Import ffmpeg only when needed (dynamic import)
+      const { FFmpeg } = await import('@ffmpeg/ffmpeg');
+      const { fetchFile } = await import('@ffmpeg/util');
+
+      // Create FFmpeg instance
+      const ffmpeg = new FFmpeg();
+      await ffmpeg.load();
+
+      // Write input file
+      const inputFileName = 'input.mp4';
+      const outputFileName = 'compressed.mp4';
+      await ffmpeg.writeFile(inputFileName, await fetchFile(trimmedBlob));
+
+      updateProgress(40);
+
+      // Set compression parameters - adjust these for quality vs size
+      await ffmpeg.exec([
+        '-i',
+        inputFileName,
+        '-c:v',
+        'libx264',
+        '-crf',
+        '28', // Higher value = more compression, lower quality
+        '-preset',
+        'fast',
+        '-vf',
+        'scale=640:-2', // Resize to 640px width
+        '-an', // Remove audio
+        outputFileName,
+      ]);
+
+      updateProgress(70);
+
       const timestamp = Date.now();
-      const extension = trimmedBlob.type.includes('mp4') ? 'mp4' : 'webm';
-      const fileName = `trim-${timestamp}.${extension}`;
+      const fullPath = `unprocessed_video/user/trim-${timestamp}.mp4`;
 
-      setUploadProgress(85);
-
-      // 6. Upload the trimmed video
-      const result = await uploadVideoToGCS(base64Data, {
-        fileName,
-        contentType: trimmedBlob.type,
+      const { url, publicUrl } = await generateSignedUrl({
+        filename: fullPath,
+        contentType: 'video/mp4',
         metadata: {
           duration: trimDuration.toString(),
           originalStart: startTime.toString(),
@@ -550,29 +594,61 @@ function EditPage() {
         },
       });
 
-      setUploadProgress(100);
+      // Read the compressed file
+      const data = await ffmpeg.readFile(outputFileName);
+      const compressedBlob = new Blob([data], { type: 'video/mp4' });
+      console.log(
+        'Compressed size:',
+        compressedBlob.size / (1024 * 1024),
+        'MB'
+      );
 
-      if (result.success) {
-        setUploadedVideoUrl(result.publicUrl);
+      updateProgress(80);
 
-        // Store trim information for reference
-        const trimInfo = {
-          videoUrl: result.publicUrl,
-          startTime: 0, // Since we've already trimmed, the new video starts at 0
-          endTime: trimDuration,
-          duration: trimDuration,
-        };
-        sessionStorage.setItem('trimInfo', JSON.stringify(trimInfo));
+      // 6. Upload the trimmed video to GCS using signed URL
+      const uploadResponse = await fetch(url, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'video/mp4' },
+        body: compressedBlob,
+      });
 
-        // Redirect to results page
-        // router.push('/analyse/result');
-      } else {
-        throw new Error(result.error || 'Upload failed');
+      if (!uploadResponse.ok) {
+        throw new Error(
+          `Upload failed: ${uploadResponse.status} ${uploadResponse.statusText}`
+        );
       }
+
+      clearInterval(simulationInterval);
+      setUploadProgress(100);
+      setUploadedVideoUrl(publicUrl);
+
+      // Store trim information for reference
+      const trimInfo = {
+        videoUrl: publicUrl,
+        fileName: fullPath,
+        startTime: 0, // Since we've already trimmed, the new video starts at 0
+        endTime: trimDuration,
+        duration: trimDuration,
+      };
+
+      sessionStorage.setItem(
+        'trimInfo',
+        JSON.stringify({
+          videoUrl: publicUrl,
+          fileName: fullPath,
+          startTime: 0,
+          endTime: endTime - startTime,
+          duration: endTime - startTime,
+        })
+      );
+
+      // Redirect to results page
+      // router.push('/analyse/result');
     } catch (error) {
       console.error('Error creating or uploading trimmed video:', error);
       setUploadError((error as Error).message);
     } finally {
+      clearInterval(simulationInterval);
       setIsUploading(false);
     }
   }
@@ -735,14 +811,16 @@ function EditPage() {
                 style={{ left: `${(currentTime / videoDuration) * 100}%` }}
               ></div>
             </div>
-            {/* Analyse button */}
-            {/* Add this to your JSX where the analyse button should be */}
-            <Button
-              onClick={uploadTrimmedVideo}
-              disabled={isUploading || !videoSrc || isLoading}
-            >
-              {isUploading ? 'Uploading...' : 'Analyse Swing'}
-            </Button>
+            <div className="w-full flex items-center justify-center pt-4">
+              {/* Analyse button */}
+              <Button
+                onClick={uploadTrimmedVideo}
+                disabled={isUploading || !videoSrc || isLoading}
+                className="text-md p-5"
+              >
+                {isUploading ? 'Uploading...' : 'Analyse Swing'}
+              </Button>
+            </div>
 
             {/* Loading indicator */}
             {isUploading && (
@@ -753,10 +831,17 @@ function EditPage() {
                     style={{ width: `${uploadProgress}%` }}
                   ></div>
                 </div>
-                <p className="text-sm text-gray-600 mt-1">
-                  {uploadProgress < 100
-                    ? 'Uploading video...'
-                    : 'Processing complete!'}
+                <p className="text-sm text-gray-200 mt-1">
+                  {uploadProgress < 30
+                    ? 'Preparing video...'
+                    : uploadProgress < 70
+                      ? 'Compressing video...'
+                      : uploadProgress < 90
+                        ? 'Uploading video...'
+                        : uploadProgress < 100
+                          ? 'Finalizing...'
+                          : 'Processing complete!'}
+                  {` (${uploadProgress}%)`}
                 </p>
               </div>
             )}
