@@ -525,19 +525,47 @@ function EditPage() {
         endTime
       );
 
-      clearInterval(progressInterval);
-      setUploadProgress(50);
+      setUploadProgress(30);
 
-      // 5. Create filename
+      // Compress the trimmed video before upload
+      setUploadProgress(40);
+      console.log('Original size:', trimmedBlob.size / (1024 * 1024), 'MB');
+
+      // Import ffmpeg only when needed (dynamic import)
+      const { FFmpeg } = await import('@ffmpeg/ffmpeg');
+      const { fetchFile } = await import('@ffmpeg/util');
+
+      // Create FFmpeg instance
+      const ffmpeg = new FFmpeg();
+      await ffmpeg.load();
+
+      // Write input file
+      const inputFileName = 'input.mp4';
+      const outputFileName = 'compressed.mp4';
+      await ffmpeg.writeFile(inputFileName, await fetchFile(trimmedBlob));
+
+      // Set compression parameters - adjust these for quality vs size
+      await ffmpeg.exec([
+        '-i',
+        inputFileName,
+        '-c:v',
+        'libx264',
+        '-crf',
+        '28', // Higher value = more compression, lower quality
+        '-preset',
+        'fast',
+        '-vf',
+        'scale=640:-2', // Resize to 640px width
+        '-an', // Remove audio
+        outputFileName,
+      ]);
+
       const timestamp = Date.now();
-      const extension = trimmedBlob.type.includes('mp4') ? 'mp4' : 'webm';
-      const fileName = `trim-${timestamp}.${extension}`;
-      const fullPath = `unprocessed_video/user/${fileName}`;
-      const contentType = trimmedBlob.type || 'video/mp4';
+      const fullPath = `unprocessed_video/user/trim-${timestamp}.mp4`;
 
       const { url, publicUrl } = await generateSignedUrl({
         filename: fullPath,
-        contentType: contentType,
+        contentType: 'video/mp4',
         metadata: {
           duration: trimDuration.toString(),
           originalStart: startTime.toString(),
@@ -548,15 +576,22 @@ function EditPage() {
         },
       });
 
-      setUploadProgress(60);
+      // Read the compressed file
+      const data = await ffmpeg.readFile(outputFileName);
+      const compressedBlob = new Blob([data], { type: 'video/mp4' });
+      console.log(
+        'Compressed size:',
+        compressedBlob.size / (1024 * 1024),
+        'MB'
+      );
+
+      setUploadProgress(70);
 
       // 6. Upload the trimmed video to GCS using signed URL
       const uploadResponse = await fetch(url, {
         method: 'PUT',
-        headers: {
-          'Content-Type': contentType,
-        },
-        body: trimmedBlob,
+        headers: { 'Content-Type': 'video/mp4' },
+        body: compressedBlob,
       });
 
       if (!uploadResponse.ok) {
@@ -576,7 +611,17 @@ function EditPage() {
         endTime: trimDuration,
         duration: trimDuration,
       };
-      sessionStorage.setItem('trimInfo', JSON.stringify(trimInfo));
+
+      sessionStorage.setItem(
+        'trimInfo',
+        JSON.stringify({
+          videoUrl: publicUrl,
+          fileName: fullPath,
+          startTime: 0,
+          endTime: endTime - startTime,
+          duration: endTime - startTime,
+        })
+      );
 
       // Redirect to results page
       // router.push('/analyse/result');
