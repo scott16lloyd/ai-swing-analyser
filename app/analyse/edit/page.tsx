@@ -5,7 +5,7 @@ import getBlobDuration from 'get-blob-duration';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Activity } from 'lucide-react';
-import { uploadVideoToGCS } from '@/app/actions/storage';
+import { uploadVideoToGCS, generateSignedUrl } from '@/app/actions/storage';
 import { standardTrimVideo } from '@/lib/videoUtils';
 
 function EditPage() {
@@ -502,12 +502,15 @@ function EditPage() {
         setUploadError(
           'Video must be less than 8 seconds for analysis, please trim the video shorter.'
         );
+        setIsUploading(false);
+        return;
       }
+
       const progressInterval = setInterval(() => {
         if (sourceVideo.currentTime > startTime) {
           const progress = Math.min(
-            70,
-            20 + ((sourceVideo.currentTime - startTime) / trimDuration) * 50
+            40,
+            20 + ((sourceVideo.currentTime - startTime) / trimDuration) * 20
           );
           setUploadProgress(Math.floor(progress));
         }
@@ -523,24 +526,18 @@ function EditPage() {
       );
 
       clearInterval(progressInterval);
-      setUploadProgress(75);
-
-      // 4. Convert Blob to base64 for upload
-      const base64Data = await blobToBase64(trimmedBlob);
+      setUploadProgress(50);
 
       // 5. Create filename
       const timestamp = Date.now();
       const extension = trimmedBlob.type.includes('mp4') ? 'mp4' : 'webm';
       const fileName = `trim-${timestamp}.${extension}`;
+      const fullPath = `unprocessed_video/user/${fileName}`;
+      const contentType = trimmedBlob.type || 'video/mp4';
 
-      setUploadProgress(85);
-
-      // 6. Upload the trimmed video
-      const result = await uploadVideoToGCS(base64Data, {
-        fileName,
-        maxSizeMB: 5,
-        targetResolution: '640x360',
-        contentType: trimmedBlob.type,
+      const { url, publicUrl } = await generateSignedUrl({
+        filename: fullPath,
+        contentType: contentType,
         metadata: {
           duration: trimDuration.toString(),
           originalStart: startTime.toString(),
@@ -551,25 +548,38 @@ function EditPage() {
         },
       });
 
-      setUploadProgress(100);
+      setUploadProgress(60);
 
-      if (result.success) {
-        setUploadedVideoUrl(result.publicUrl);
+      // 6. Upload the trimmed video to GCS using signed URL
+      const uploadResponse = await fetch(url, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': contentType,
+        },
+        body: trimmedBlob,
+      });
 
-        // Store trim information for reference
-        const trimInfo = {
-          videoUrl: result.publicUrl,
-          startTime: 0, // Since we've already trimmed, the new video starts at 0
-          endTime: trimDuration,
-          duration: trimDuration,
-        };
-        sessionStorage.setItem('trimInfo', JSON.stringify(trimInfo));
-
-        // Redirect to results page
-        // router.push('/analyse/result');
-      } else {
-        throw new Error(result.error || 'Upload failed');
+      if (!uploadResponse.ok) {
+        throw new Error(
+          `Upload failed: ${uploadResponse.status} ${uploadResponse.statusText}`
+        );
       }
+
+      setUploadProgress(100);
+      setUploadedVideoUrl(publicUrl);
+
+      // Store trim information for reference
+      const trimInfo = {
+        videoUrl: publicUrl,
+        fileName: fullPath,
+        startTime: 0, // Since we've already trimmed, the new video starts at 0
+        endTime: trimDuration,
+        duration: trimDuration,
+      };
+      sessionStorage.setItem('trimInfo', JSON.stringify(trimInfo));
+
+      // Redirect to results page
+      // router.push('/analyse/result');
     } catch (error) {
       console.error('Error creating or uploading trimmed video:', error);
       setUploadError((error as Error).message);
