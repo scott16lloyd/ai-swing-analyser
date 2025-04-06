@@ -328,7 +328,7 @@ function EditPage() {
   }, [isPlaying, startTime, endTime]);
 
   // Format time display
-  const formatTime = (time: number) => {
+  const formatTime = (time: number): string => {
     if (!isFinite(time) || isNaN(time)) {
       return '0:00';
     }
@@ -439,7 +439,7 @@ function EditPage() {
     [startTime, endTime, videoDuration]
   );
 
-  const handleVideoEnded = useCallback(() => {
+  const handleVideoEnded = useCallback((): void => {
     mobileLog('Video playback ended');
 
     // Update playing state
@@ -579,6 +579,522 @@ function EditPage() {
     );
   }
 
+  // Enhanced iOS video trimming and compression functions
+  async function processVideoForIOS(
+    sourceVideo: HTMLVideoElement,
+    startTime: number,
+    endTime: number
+  ): Promise<Blob | null> {
+    mobileLog(
+      `Starting iOS-optimized video processing: ${startTime}s to ${endTime}s`
+    );
+    const trimDuration = endTime - startTime;
+
+    // 1. Better compression settings with iOS compatibility in mind
+    const compressionSettings = {
+      targetWidth: Math.min(640, sourceVideo.videoWidth || 640),
+      targetHeight: Math.min(360, sourceVideo.videoHeight || 480),
+      framerate: 24,
+      videoBitrate: 2000000, // 2 Mbps - balanced quality
+      keyframeInterval: 24, // Every second at 24fps
+    };
+
+    // Calculate dimensions while preserving aspect ratio
+    const aspectRatio =
+      (sourceVideo.videoWidth || 16) / (sourceVideo.videoHeight || 9);
+    let targetWidth = compressionSettings.targetWidth;
+    let targetHeight = compressionSettings.targetHeight;
+
+    if (aspectRatio > targetWidth / targetHeight) {
+      // Width bounded
+      targetHeight = Math.round(targetWidth / aspectRatio);
+    } else {
+      // Height bounded
+      targetWidth = Math.round(targetHeight * aspectRatio);
+    }
+
+    // Make dimensions even (required for some encoders)
+    targetWidth = targetWidth - (targetWidth % 2);
+    targetHeight = targetHeight - (targetHeight % 2);
+
+    mobileLog(`Compression dimensions: ${targetWidth}x${targetHeight}`);
+
+    // 2. Create compression canvas with reduced dimensions
+    const compressionCanvas = document.createElement('canvas');
+    compressionCanvas.width = targetWidth;
+    compressionCanvas.height = targetHeight;
+    const compCtx = compressionCanvas.getContext('2d', { alpha: false });
+
+    if (!compCtx) {
+      throw new Error('Could not create compression canvas context');
+    }
+
+    // 3. Two-pass approach: first verify we can seek properly
+    mobileLog('Verifying video seeking capabilities...');
+
+    // Test seek functionality
+    let canSeekReliably = true;
+    try {
+      // Try to seek to start position
+      sourceVideo.currentTime = startTime;
+
+      // Wait for seek with strict verification
+      await new Promise<void>((resolve, reject) => {
+        const seekTimeout = setTimeout(() => {
+          if (Math.abs(sourceVideo.currentTime - startTime) > 0.5) {
+            canSeekReliably = false;
+            mobileLog(
+              `Seek verification failed. Target: ${startTime}, Actual: ${sourceVideo.currentTime}`
+            );
+          }
+          resolve();
+        }, 1500);
+
+        const seeked = () => {
+          clearTimeout(seekTimeout);
+          resolve();
+        };
+
+        sourceVideo.addEventListener('seeked', seeked, { once: true });
+      });
+    } catch (e) {
+      canSeekReliably = false;
+      mobileLog(
+        `Seek test error: ${e instanceof Error ? e.message : 'Unknown error'}`
+      );
+    }
+
+    // 4. Choose processing strategy based on seek capabilities
+    if (!canSeekReliably) {
+      // APPROACH A: Use time-based extraction for devices with poor seeking
+      mobileLog('Using continuous playback approach for unreliable seeking');
+      return await continuousPlaybackExtraction(
+        sourceVideo,
+        compressionCanvas,
+        compCtx,
+        startTime,
+        endTime,
+        targetWidth,
+        targetHeight,
+        compressionSettings
+      );
+    } else {
+      // APPROACH B: Use frame-by-frame extraction for devices with good seeking
+      mobileLog('Using frame-by-frame extraction approach');
+      return await frameByFrameExtraction(
+        sourceVideo,
+        compressionCanvas,
+        compCtx,
+        startTime,
+        endTime,
+        targetWidth,
+        targetHeight,
+        compressionSettings
+      );
+    }
+  }
+
+  interface CompressionSettings {
+    targetWidth: number;
+    targetHeight: number;
+    framerate: number;
+    videoBitrate: number;
+    keyframeInterval: number;
+  }
+
+  // Approach A: Continuous playback extraction (more reliable on problematic iOS devices)
+  async function continuousPlaybackExtraction(
+    sourceVideo: HTMLVideoElement,
+    canvas: HTMLCanvasElement,
+    ctx: CanvasRenderingContext2D,
+    startTime: number,
+    endTime: number,
+    width: number,
+    height: number,
+    settings: CompressionSettings
+  ): Promise<Blob | null> {
+    // Create a MediaRecorder with iOS-compatible settings
+    let mimeType = 'video/mp4';
+    let codecOptions: Record<string, any> = {};
+
+    // Test for codec support
+    if (MediaRecorder.isTypeSupported('video/mp4')) {
+      mimeType = 'video/mp4';
+      mobileLog('Using MP4 recording');
+    } else if (MediaRecorder.isTypeSupported('video/webm')) {
+      mimeType = 'video/webm';
+      mobileLog('Using WebM recording');
+    } else {
+      mimeType = '';
+      mobileLog('Using default browser codec');
+    }
+
+    if (mimeType) {
+      codecOptions = {
+        mimeType: mimeType,
+        videoBitsPerSecond: settings.videoBitrate,
+      };
+    }
+
+    // Start video at the beginning
+    sourceVideo.currentTime = startTime;
+
+    // Create a stream from the canvas
+    const canvasStream = canvas.captureStream(settings.framerate);
+
+    // Set up recorder
+    let recorder: MediaRecorder;
+    try {
+      recorder = new MediaRecorder(
+        canvasStream,
+        codecOptions as MediaRecorderOptions
+      );
+    } catch (e) {
+      mobileLog(
+        `MediaRecorder error with options, trying without options: ${e instanceof Error ? e.message : 'Unknown error'}`
+      );
+      recorder = new MediaRecorder(canvasStream);
+    }
+
+    const chunks: BlobPart[] = [];
+    recorder.ondataavailable = (e: BlobEvent) => chunks.push(e.data);
+
+    // Set up recording promise
+    const recordingPromise = new Promise<Blob>((resolve, reject) => {
+      let recordingTimeout: NodeJS.Timeout | undefined;
+
+      recorder.onstop = () => {
+        clearTimeout(recordingTimeout);
+        try {
+          const videoType = mimeType || 'video/webm';
+          const blob = new Blob(chunks, { type: videoType });
+
+          mobileLog(`Recording completed: ${blob.size / 1024}KB`);
+          resolve(blob);
+        } catch (e) {
+          reject(e);
+        }
+      };
+
+      recorder.onerror = (event: Event): void => {
+        clearTimeout(recordingTimeout);
+        reject(
+          new Error(
+            `MediaRecorder error: ${event instanceof ErrorEvent ? event.message : 'Unknown error'}`
+          )
+        );
+      };
+
+      // Safety timeout
+      const duration = endTime - startTime;
+      recordingTimeout = setTimeout(
+        () => {
+          try {
+            if (recorder.state === 'recording') {
+              recorder.stop();
+            }
+          } catch (e) {
+            reject(e);
+          }
+        },
+        duration * 1000 + 5000
+      ); // Duration plus safety margin
+    });
+
+    // Start recording
+    recorder.start(1000); // 1 second chunks
+
+    // Draw frames while video plays
+    const drawFrame = (): void => {
+      if (sourceVideo.currentTime < endTime) {
+        // Draw current frame to canvas
+        ctx.drawImage(sourceVideo, 0, 0, width, height);
+
+        // Continue animation if still within trim range
+        requestAnimationFrame(drawFrame);
+      } else {
+        // Reached the end time, stop recording
+        try {
+          recorder.stop();
+        } catch (e) {
+          mobileLog(
+            `Error stopping recorder: ${e instanceof Error ? e.message : 'Unknown error'}`
+          );
+        }
+      }
+    };
+
+    // Play the video to drive the extraction
+    try {
+      sourceVideo.play();
+      drawFrame(); // Start animation loop
+    } catch (e) {
+      mobileLog(
+        `Error during playback: ${e instanceof Error ? e.message : 'Unknown error'}`
+      );
+      return null;
+    }
+
+    // Wait for recording to complete
+    return await recordingPromise;
+  }
+
+  // Approach B: Frame-by-frame extraction (for devices with good seeking)
+  async function frameByFrameExtraction(
+    sourceVideo: HTMLVideoElement,
+    canvas: HTMLCanvasElement,
+    ctx: CanvasRenderingContext2D,
+    startTime: number,
+    endTime: number,
+    width: number,
+    height: number,
+    settings: CompressionSettings
+  ): Promise<Blob | null> {
+    const trimDuration = endTime - startTime;
+    const framerate = settings.framerate;
+    const frameCount = Math.ceil(trimDuration * framerate);
+
+    mobileLog(`Capturing ${frameCount} frames at ${framerate}fps`);
+
+    // Capture frames approach
+    let frames: ImageData[] = [];
+    for (let i = 0; i < frameCount; i++) {
+      const frameTime = startTime + i / framerate;
+
+      // Seek to specific time
+      sourceVideo.currentTime = frameTime;
+
+      // Wait for seek with timeout
+      await new Promise<void>((resolve) => {
+        const seekHandler = () => {
+          sourceVideo.removeEventListener('seeked', seekHandler);
+          resolve();
+        };
+
+        sourceVideo.addEventListener('seeked', seekHandler, { once: true });
+
+        // Timeout fallback
+        setTimeout(resolve, 500);
+      });
+
+      // Draw and capture frame
+      ctx.drawImage(sourceVideo, 0, 0, width, height);
+      frames.push(ctx.getImageData(0, 0, width, height));
+
+      // Log progress periodically
+      if (i % 10 === 0) {
+        mobileLog(`Captured frame ${i + 1}/${frameCount}`);
+      }
+    }
+
+    mobileLog(`All ${frames.length} frames captured, creating video...`);
+
+    // Set up MediaRecorder
+    let mimeType = '';
+    const codecOptions: Record<string, any> = {};
+
+    // Find supported codec with fallbacks
+    for (const type of [
+      'video/webm;codecs=h264',
+      'video/webm;codecs=vp9',
+      'video/webm;codecs=vp8',
+      'video/webm',
+      'video/mp4',
+      '',
+    ]) {
+      if (!type || MediaRecorder.isTypeSupported(type)) {
+        mimeType = type;
+        if (type) {
+          codecOptions.mimeType = type;
+          codecOptions.videoBitsPerSecond = settings.videoBitrate;
+        }
+        mobileLog(`Using codec: ${type || 'browser default'}`);
+        break;
+      }
+    }
+
+    // Create stream from canvas
+    const canvasStream = canvas.captureStream(framerate);
+
+    // Set up recorder
+    let recorder: MediaRecorder;
+    try {
+      recorder = new MediaRecorder(
+        canvasStream,
+        codecOptions as MediaRecorderOptions
+      );
+    } catch (e) {
+      mobileLog(
+        `MediaRecorder creation failed with options: ${e instanceof Error ? e.message : 'Unknown error'}`
+      );
+      try {
+        recorder = new MediaRecorder(canvasStream);
+        mobileLog('Created MediaRecorder with default options');
+      } catch (e2) {
+        mobileLog(
+          `MediaRecorder creation completely failed: ${e2 instanceof Error ? e2.message : 'Unknown error'}`
+        );
+        throw new Error('Cannot create MediaRecorder on this device');
+      }
+    }
+
+    const chunks: BlobPart[] = [];
+    recorder.ondataavailable = (e: BlobEvent) => chunks.push(e.data);
+
+    // Set up recording promise
+    const recordingPromise = new Promise<Blob>((resolve, reject) => {
+      recorder.onstop = () => {
+        try {
+          const videoType = mimeType || 'video/webm';
+          const blob = new Blob(chunks, { type: videoType });
+          mobileLog(`Recording completed: ${blob.size / 1024}KB`);
+          resolve(blob);
+        } catch (e) {
+          reject(e);
+        }
+      };
+
+      recorder.onerror = (e: Event) => {
+        if (e instanceof ErrorEvent) {
+          reject(new Error(`MediaRecorder error: ${e.message}`));
+        } else {
+          reject(new Error(`MediaRecorder error: Unknown error`));
+        }
+      };
+    });
+
+    // Start recording
+    recorder.start(Math.ceil(1000 / framerate) * settings.keyframeInterval);
+
+    // Play back the frames at the correct rate
+    let frameIndex = 0;
+    const interval = setInterval((): void => {
+      if (frameIndex < frames.length) {
+        ctx.putImageData(frames[frameIndex], 0, 0);
+        frameIndex++;
+      } else {
+        clearInterval(interval);
+        // Wait a bit to ensure last frame is captured
+        setTimeout(() => {
+          try {
+            recorder.stop();
+          } catch (e) {
+            mobileLog(
+              `Error stopping recorder: ${e instanceof Error ? e.message : 'Unknown error'}`
+            );
+          }
+        }, 200);
+      }
+    }, 1000 / framerate);
+
+    // Wait for recording to complete
+    return await recordingPromise;
+  }
+
+  // Simple extraction fallback function (last resort before using original)
+  async function extractVideoSegmentFallback(
+    videoUrl: string,
+    startTime: number,
+    endTime: number
+  ): Promise<Blob | null> {
+    const video = document.createElement('video');
+    video.src = videoUrl;
+
+    await new Promise<void>((resolve) => {
+      video.onloadedmetadata = () => resolve();
+      video.load();
+      setTimeout(resolve, 2000); // Failsafe
+    });
+
+    // Create a low-res canvas for higher compatibility
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.min(480, video.videoWidth || 480);
+    canvas.height = Math.min(320, video.videoHeight || 320);
+    const ctx = canvas.getContext('2d');
+
+    // Try to use captureStream for more direct recording
+    const stream = canvas.captureStream(15); // Lower framerate for compatibility
+
+    try {
+      const recorder = new MediaRecorder(stream);
+      const chunks: BlobPart[] = [];
+
+      recorder.ondataavailable = (e: BlobEvent) => chunks.push(e.data);
+
+      const recordingPromise = new Promise<Blob>((resolve, reject) => {
+        let timeoutId: NodeJS.Timeout;
+
+        recorder.onstop = () => {
+          clearTimeout(timeoutId);
+          const blob = new Blob(chunks, { type: 'video/webm' });
+          resolve(blob);
+        };
+
+        recorder.onerror = (e: Event) => {
+          clearTimeout(timeoutId);
+          if (e instanceof ErrorEvent) {
+            reject(new Error(`Recorder error: ${e.message}`));
+          } else {
+            reject(new Error('Unknown recorder error'));
+          }
+        };
+
+        // Safety timeout
+        timeoutId = setTimeout(
+          () => {
+            try {
+              if (recorder.state === 'recording') recorder.stop();
+            } catch (e) {
+              reject(e);
+            }
+          },
+          (endTime - startTime) * 1000 + 3000
+        );
+      });
+
+      // Start recording
+      recorder.start(1000);
+
+      // Position and play video
+      video.currentTime = startTime;
+
+      // Wait a moment to ensure seeking completes
+      await new Promise<void>((resolve) => setTimeout(resolve, 500));
+
+      // Function to draw frames
+      const drawFrame = (): void => {
+        if (video.currentTime < endTime) {
+          ctx!.drawImage(video, 0, 0, canvas.width, canvas.height);
+          requestAnimationFrame(drawFrame);
+        } else {
+          setTimeout(() => {
+            try {
+              recorder.stop();
+            } catch (e: unknown) {
+              mobileLog(
+                `Error stopping fallback recorder: ${e instanceof Error ? e.message : 'Unknown error'}`
+              );
+            }
+          }, 200);
+        }
+      };
+
+      // Start playback and drawing
+      await video.play();
+      drawFrame();
+
+      // Wait for recording to complete
+      return await recordingPromise;
+    } catch (e) {
+      if (e instanceof Error) {
+        mobileLog(`Fallback extraction error: ${e.message}`);
+      } else {
+        mobileLog('Fallback extraction error: Unknown error');
+      }
+      return null;
+    }
+  }
+
   // Upload trimmed video to GCS
   async function uploadTrimmedVideo() {
     // Reset states
@@ -599,7 +1115,7 @@ function EditPage() {
     };
 
     // Create smooth progress simulation
-    const simulationInterval = setInterval(() => {
+    const simulationInterval = setInterval((): void => {
       // Different acceleration rates for different phases
       if (lastProgress < 30) {
         // Preparing phase - move a bit faster
@@ -625,12 +1141,12 @@ function EditPage() {
       mobileLog(`Starting video processing`);
 
       // 2. Set up video and canvas for processing
-      const sourceVideo = document.createElement('video');
+      const sourceVideo: HTMLVideoElement = document.createElement('video');
       sourceVideo.src = videoSrc;
       sourceVideo.muted = true;
 
       // Wait for video metadata to load and validate source
-      const sourceValid = await new Promise((resolve) => {
+      const sourceValid = await new Promise<boolean>((resolve) => {
         sourceVideo.onloadedmetadata = () => {
           mobileLog(
             `Source video metadata loaded: ${sourceVideo.videoWidth}x${sourceVideo.videoHeight}`
@@ -672,400 +1188,105 @@ function EditPage() {
         return;
       }
 
+      // Improved iOS detection
       const isiOSDevice =
-        ['iPad', 'iPhone', 'iPod'].includes(navigator.platform) ||
-        (navigator.userAgent.includes('Mac') && 'ontouchend' in document);
+        /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+        (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 
       mobileLog(`Device detected as iOS: ${isiOSDevice}`);
 
-      // ----- iOS Workaround -----
+      // ----- iOS Specific Processing -----
       if (isiOSDevice) {
         mobileLog(`Using iOS-specific video processing with compression`);
 
-        // Compression settings
-        const compressionSettings = {
-          targetWidth: 640, // Smaller dimension for compression
-          targetHeight: 360, // Maintain 16:9 aspect ratio if possible
-          framerate: 24, // Lower framerate for smaller file
-          videoBitrate: 1500000, // 1.5 Mbps (lower than before)
-          keyframeInterval: 48, // Every 2 seconds at 24fps
-        };
-
-        // Calculate scaled dimensions (maintain aspect ratio)
-        let targetWidth = compressionSettings.targetWidth;
-        let targetHeight = compressionSettings.targetHeight;
-
-        if (sourceVideo.videoWidth && sourceVideo.videoHeight) {
-          const aspectRatio = sourceVideo.videoWidth / sourceVideo.videoHeight;
-          if (aspectRatio > targetWidth / targetHeight) {
-            // Width bounded
-            targetHeight = Math.round(targetWidth / aspectRatio);
-          } else {
-            // Height bounded
-            targetWidth = Math.round(targetHeight * aspectRatio);
-          }
-        }
-
-        mobileLog(
-          `Original dimensions: ${sourceVideo.videoWidth}x${sourceVideo.videoHeight}`
-        );
-        mobileLog(`Compressed dimensions: ${targetWidth}x${targetHeight}`);
-
-        // Create compression canvas with reduced dimensions
-        const compressionCanvas = document.createElement('canvas');
-        compressionCanvas.width = targetWidth;
-        compressionCanvas.height = targetHeight;
-        const compCtx = compressionCanvas.getContext('2d');
-
-        if (!compCtx) {
-          throw new Error('Could not create compression canvas context');
-        }
-
-        // Direct recording from the canvas with compressed dimensions
-        let frames: ImageData[] = [];
-        const framerate = compressionSettings.framerate;
-        const frameCount = Math.ceil(trimDuration * framerate);
-
-        updateProgress(10);
-
-        // Capture frames at reduced framerate
-        for (let i = 0; i < frameCount; i++) {
-          const currentTime = startTime + i / framerate;
-
-          // Set video time
-          sourceVideo.currentTime = currentTime;
-
-          // Wait for seek to complete
-          await new Promise<void>((resolve) => {
-            const seeked = () => {
-              sourceVideo.removeEventListener('seeked', seeked);
-              resolve();
-            };
-            sourceVideo.addEventListener('seeked', seeked);
-
-            // Timeout in case event never fires
-            setTimeout(resolve, 500);
-          });
-
-          // Draw the frame to compression canvas with scaled dimensions
-          compCtx.drawImage(sourceVideo, 0, 0, targetWidth, targetHeight);
-
-          // Capture the frame as image data
-          const imageData = compCtx.getImageData(
-            0,
-            0,
-            targetWidth,
-            targetHeight
+        try {
+          // Process video using the improved iOS function
+          const processedBlob = await processVideoForIOS(
+            sourceVideo,
+            startTime,
+            endTime
           );
-          frames.push(imageData);
 
-          // Update progress periodically
-          if (i % 10 === 0) {
-            updateProgress(10 + (i / frameCount) * 20);
+          if (processedBlob && processedBlob.size >= 10000) {
+            mobileLog(
+              `Successfully created trimmed video: ${processedBlob.size / 1024}KB`
+            );
+
+            // Upload the processed video
+            await uploadBlobToGCS(
+              processedBlob,
+              sourceVideo.videoWidth > 0
+                ? Math.min(sourceVideo.videoWidth, 640)
+                : 640,
+              sourceVideo.videoHeight > 0
+                ? Math.min(sourceVideo.videoHeight, 360)
+                : 360,
+              endTime - startTime
+            );
+
+            clearInterval(simulationInterval);
+            return;
+          } else {
+            mobileLog('Processed video too small or failed, trying fallback');
+          }
+        } catch (e) {
+          if (e instanceof Error) {
+            mobileLog(`iOS video processing error: ${e.message}`);
+          } else {
+            mobileLog('iOS video processing error: Unknown error');
           }
         }
 
-        mobileLog(`Captured ${frames.length} frames at ${framerate}fps`);
-        updateProgress(30);
-
-        // Try to get supported MIME types
-        let mimeType = 'video/webm;codecs=h264';
-        let codecOptions = {
-          mimeType: mimeType,
-          videoBitsPerSecond: compressionSettings.videoBitrate,
-        };
-
-        // Test if the preferred codec is supported
-        if (!MediaRecorder.isTypeSupported(mimeType)) {
-          mobileLog(`${mimeType} not supported, trying alternatives`);
-
-          // Try alternatives in order of preference
-          const alternatives = [
-            'video/webm;codecs=vp9',
-            'video/webm;codecs=vp8',
-            'video/webm',
-            'video/mp4',
-            '', // Empty string lets browser choose
-          ];
-
-          for (const alt of alternatives) {
-            if (!alt || MediaRecorder.isTypeSupported(alt)) {
-              mimeType = alt;
-              codecOptions = {
-                mimeType: alt || '',
-                videoBitsPerSecond: compressionSettings.videoBitrate,
-              };
-              mobileLog(`Using codec: ${alt || 'browser default'}`);
-              break;
-            }
-          }
-        }
-
-        // Create MediaRecorder to record the canvas
-        const canvasStream = compressionCanvas.captureStream(framerate);
+        // If we get here, we need to try the fallback approach
+        mobileLog('Using simplified fallback approach');
 
         try {
-          // Try to create recorder with our settings
-          const recorder = new MediaRecorder(canvasStream, codecOptions);
-
-          const chunks: Blob[] = [];
-          recorder.ondataavailable = (e) => chunks.push(e.data);
-
-          // Promise that resolves when recording stops
-          const recordingPromise = new Promise<Blob>((resolve) => {
-            recorder.onstop = () => {
-              let trimmedBlob;
-
-              // Create the right blob type based on mime type
-              if (mimeType.includes('mp4')) {
-                trimmedBlob = new Blob(chunks, { type: 'video/mp4' });
-              } else {
-                trimmedBlob = new Blob(chunks, { type: 'video/webm' });
-              }
-
-              resolve(trimmedBlob);
-            };
-          });
-
-          // Start recording
-          recorder.start(
-            (1000 / framerate) * compressionSettings.keyframeInterval
-          ); // Segment size matches keyframe interval
-
-          // Play back the frames
-          let frameIndex = 0;
-          const playbackInterval = setInterval(() => {
-            if (frameIndex < frames.length) {
-              compCtx.putImageData(frames[frameIndex], 0, 0);
-              frameIndex++;
-              updateProgress(30 + (frameIndex / frames.length) * 20);
-            } else {
-              clearInterval(playbackInterval);
-              recorder.stop();
-            }
-          }, 1000 / framerate);
-
-          // Wait for recording to complete
-          const trimmedBlob = await recordingPromise;
-
-          mobileLog(
-            `Recording completed, compressed size: ${trimmedBlob.size / 1024} KB`
+          // Direct extraction fallback
+          const fallbackBlob = await extractVideoSegmentFallback(
+            videoSrc,
+            startTime,
+            endTime
           );
 
-          // Validate the recorded blob
-          const isValid = await isValidVideoBlob(trimmedBlob);
-          mobileLog(`Recorded video valid: ${isValid}`);
-
-          if (!isValid || trimmedBlob.size < 10000) {
-            mobileLog(
-              `Compressed recording invalid or too small, trying with higher quality`
+          if (fallbackBlob && fallbackBlob.size >= 10000) {
+            await uploadBlobToGCS(
+              fallbackBlob,
+              sourceVideo.videoWidth || 640,
+              sourceVideo.videoHeight || 480,
+              endTime - startTime
             );
-
-            // Try again with higher quality settings
-            const highQualityRecorder = new MediaRecorder(canvasStream, {
-              videoBitsPerSecond: 3000000, // 3 Mbps - higher quality
-            });
-
-            const highQualityChunks: Blob[] = [];
-            highQualityRecorder.ondataavailable = (e) =>
-              highQualityChunks.push(e.data);
-
-            const highQualityPromise = new Promise<Blob>((resolve) => {
-              highQualityRecorder.onstop = () => {
-                const blob = new Blob(highQualityChunks, {
-                  type: 'video/webm',
-                });
-                resolve(blob);
-              };
-            });
-
-            // Play frames again
-            frameIndex = 0;
-            highQualityRecorder.start();
-
-            const replayInterval = setInterval(() => {
-              if (frameIndex < frames.length) {
-                compCtx.putImageData(frames[frameIndex], 0, 0);
-                frameIndex++;
-              } else {
-                clearInterval(replayInterval);
-                highQualityRecorder.stop();
-              }
-            }, 1000 / framerate);
-
-            const highQualityBlob = await highQualityPromise;
-            mobileLog(
-              `High quality recording completed: ${highQualityBlob.size / 1024} KB`
-            );
-
-            const highQualityValid = await isValidVideoBlob(highQualityBlob);
-            mobileLog(`High quality video valid: ${highQualityValid}`);
-
-            if (highQualityValid && highQualityBlob.size >= 10000) {
-              // Upload high quality version
-              await uploadBlobToGCS(
-                highQualityBlob,
-                targetWidth,
-                targetHeight,
-                trimDuration
-              );
-            } else {
-              // Last resort: fetch original video and convert to MP4
-              mobileLog(`Falling back to direct blob conversion`);
-
-              try {
-                // Get the original video data
-                const response = await fetch(videoSrc);
-                const originalBlob = await response.blob();
-
-                // Create an element to help with conversion
-                const videoEl = document.createElement('video');
-                videoEl.src = URL.createObjectURL(originalBlob);
-                await new Promise((resolve) => {
-                  videoEl.onloadedmetadata = resolve;
-                  setTimeout(resolve, 3000); // Timeout fallback
-                });
-
-                // Create a MediaSource object
-                const stream = (videoEl as any).captureStream();
-                const recorder = new MediaRecorder(stream);
-
-                const directChunks: Blob[] = [];
-                recorder.ondataavailable = (e) => directChunks.push(e.data);
-
-                const directPromise = new Promise<Blob>((resolve) => {
-                  recorder.onstop = () => {
-                    const blob = new Blob(directChunks, { type: 'video/webm' });
-                    resolve(blob);
-                  };
-                });
-
-                // Manually play through the segment we want
-                videoEl.currentTime = startTime;
-                videoEl.play();
-                recorder.start();
-
-                // Stop after duration
-                setTimeout(() => {
-                  videoEl.pause();
-                  recorder.stop();
-                }, trimDuration * 1000);
-
-                const directBlob = await directPromise;
-
-                if (directBlob.size > 10000) {
-                  await uploadBlobToGCS(
-                    directBlob,
-                    videoEl.videoWidth,
-                    videoEl.videoHeight,
-                    trimDuration
-                  );
-                } else {
-                  // Final fallback: use original blob but clip during upload
-                  await uploadBlobToGCS(
-                    originalBlob,
-                    sourceVideo.videoWidth,
-                    sourceVideo.videoHeight,
-                    trimDuration
-                  );
-                }
-              } catch (e) {
-                if (e instanceof Error) {
-                  mobileLog(`Direct conversion failed: ${e.message}`);
-                } else {
-                  mobileLog('Direct conversion failed with an unknown error');
-                }
-
-                // Absolute last resort: use the original video
-                const response = await fetch(videoSrc);
-                const originalBlob = await response.blob();
-
-                await uploadBlobToGCS(
-                  originalBlob,
-                  sourceVideo.videoWidth,
-                  sourceVideo.videoHeight,
-                  trimDuration
-                );
-              }
-            }
-
             clearInterval(simulationInterval);
             return;
           }
-
-          // Upload the compressed recorded blob
-          await uploadBlobToGCS(
-            trimmedBlob,
-            targetWidth,
-            targetHeight,
-            trimDuration
-          );
-
-          clearInterval(simulationInterval);
-          return;
-        } catch (recorderError) {
-          if (recorderError instanceof Error) {
-            mobileLog(`MediaRecorder error: ${recorderError.message}`);
+        } catch (fallbackError) {
+          if (fallbackError instanceof Error) {
+            mobileLog(`Fallback method failed: ${fallbackError.message}`);
           } else {
-            mobileLog('MediaRecorder error: An unknown error occurred');
-          }
-
-          // Try a more direct approach with the original video
-          try {
-            // Get the original video as a blob
-            const response = await fetch(videoSrc);
-            const originalBlob = await response.blob();
-
-            // Create a new FileReader
-            const reader = new FileReader();
-
-            // Read the blob as ArrayBuffer
-            const arrayBuffer = await new Promise<ArrayBuffer>((resolve) => {
-              reader.onload = () => resolve(reader.result as ArrayBuffer);
-              reader.readAsArrayBuffer(originalBlob);
-            });
-
-            // Create a data view for manipulation
-            const view = new DataView(arrayBuffer);
-
-            // This is a very simple "compression" by setting quality metadata
-            // It's not true compression but may help
-            const compressedBlob = new Blob([arrayBuffer], {
-              type: 'video/mp4',
-              endings: 'transparent',
-            });
-
-            await uploadBlobToGCS(
-              compressedBlob,
-              sourceVideo.videoWidth,
-              sourceVideo.videoHeight,
-              trimDuration
-            );
-
-            clearInterval(simulationInterval);
-            return;
-          } catch (directError) {
-            if (directError instanceof Error) {
-              mobileLog(`Direct approach failed: ${directError.message}`);
-            } else {
-              mobileLog('Direct approach failed with an unknown error');
-            }
-
-            // Final fallback - use original without any processing
-            const response = await fetch(videoSrc);
-            const originalBlob = await response.blob();
-
-            await uploadBlobToGCS(
-              originalBlob,
-              sourceVideo.videoWidth,
-              sourceVideo.videoHeight,
-              trimDuration
-            );
-
-            clearInterval(simulationInterval);
-            return;
+            mobileLog('Fallback method failed with an unknown error');
           }
         }
+
+        // Last resort fallback - use the original video but log warning
+        mobileLog(
+          '⚠️ WARNING: All trimming methods failed, using original video'
+        );
+        const response = await fetch(videoSrc);
+        const originalBlob = await response.blob();
+
+        // Set a user-visible warning
+        setUploadError(
+          'Video trimming failed. Using original video for analysis.'
+        );
+
+        await uploadBlobToGCS(
+          originalBlob,
+          sourceVideo.videoWidth || 640,
+          sourceVideo.videoHeight || 480,
+          endTime - startTime
+        );
+
+        clearInterval(simulationInterval);
+        return;
       }
 
       // ----- Standard approach for non-iOS devices -----
