@@ -588,15 +588,14 @@ function EditPage() {
     mobileLog(
       `Starting iOS-optimized video processing: ${startTime}s to ${endTime}s`
     );
-    const trimDuration = endTime - startTime;
 
-    // 1. Better compression settings with iOS compatibility in mind
+    // Lower resolution for better iOS compatibility
     const compressionSettings = {
-      targetWidth: Math.min(640, sourceVideo.videoWidth || 640),
-      targetHeight: Math.min(360, sourceVideo.videoHeight || 480),
-      framerate: 24,
-      videoBitrate: 2000000, // 2 Mbps - balanced quality
-      keyframeInterval: 24, // Every second at 24fps
+      targetWidth: Math.min(480, sourceVideo.videoWidth || 480),
+      targetHeight: Math.min(320, sourceVideo.videoHeight || 320),
+      framerate: 20, // Lower framerate for better iOS compatibility
+      videoBitrate: 1500000, // Lower bitrate for iOS
+      keyframeInterval: 20,
     };
 
     // Calculate dimensions while preserving aspect ratio
@@ -606,10 +605,8 @@ function EditPage() {
     let targetHeight = compressionSettings.targetHeight;
 
     if (aspectRatio > targetWidth / targetHeight) {
-      // Width bounded
       targetHeight = Math.round(targetWidth / aspectRatio);
     } else {
-      // Height bounded
       targetWidth = Math.round(targetHeight * aspectRatio);
     }
 
@@ -619,7 +616,7 @@ function EditPage() {
 
     mobileLog(`Compression dimensions: ${targetWidth}x${targetHeight}`);
 
-    // 2. Create compression canvas with reduced dimensions
+    // Create compression canvas
     const compressionCanvas = document.createElement('canvas');
     compressionCanvas.width = targetWidth;
     compressionCanvas.height = targetHeight;
@@ -629,68 +626,127 @@ function EditPage() {
       throw new Error('Could not create compression canvas context');
     }
 
-    // 3. Two-pass approach: first verify we can seek properly
-    mobileLog('Verifying video seeking capabilities...');
-
-    // Test seek functionality
-    let canSeekReliably = true;
+    // For iOS, we'll use a simpler approach - direct frame capture method
     try {
-      // Try to seek to start position
+      mobileLog('Using simplified frame capture method for iOS');
+
+      // Determine the safest mime type and codec
+      let mimeType = 'video/mp4';
+
+      // Test for codec support - use a series of iOS-friendly formats
+      for (const type of [
+        'video/mp4',
+        'video/webm;codecs=h264',
+        'video/webm',
+      ]) {
+        if (MediaRecorder.isTypeSupported(type)) {
+          mimeType = type;
+          mobileLog(`iOS compatible mime type found: ${type}`);
+          break;
+        }
+      }
+
+      // Create a MediaRecorder with basic settings
+      const stream = compressionCanvas.captureStream(
+        compressionSettings.framerate
+      );
+      const recorder = new MediaRecorder(stream, {
+        mimeType,
+        videoBitsPerSecond: compressionSettings.videoBitrate,
+      });
+
+      const chunks: BlobPart[] = [];
+      recorder.ondataavailable = (e: BlobEvent) => chunks.push(e.data);
+
+      // Set up recording completion promise
+      const recordingPromise = new Promise<Blob>((resolve, reject) => {
+        recorder.onstop = () => {
+          try {
+            const blob = new Blob(chunks, { type: mimeType });
+            mobileLog(`Recording complete: ${blob.size / 1024}KB`);
+            resolve(blob);
+          } catch (e) {
+            reject(e);
+          }
+        };
+
+        recorder.onerror = (event: Event) => {
+          reject(
+            new Error(
+              `MediaRecorder error: ${event instanceof ErrorEvent ? event.message : 'Unknown error'}`
+            )
+          );
+        };
+      });
+
+      // Start recording with small time slices for more reliable operation on iOS
+      recorder.start(100);
+
+      // Position video at start
       sourceVideo.currentTime = startTime;
 
-      // Wait for seek with strict verification
-      await new Promise<void>((resolve, reject) => {
-        const seekTimeout = setTimeout(() => {
-          if (Math.abs(sourceVideo.currentTime - startTime) > 0.5) {
-            canSeekReliably = false;
-            mobileLog(
-              `Seek verification failed. Target: ${startTime}, Actual: ${sourceVideo.currentTime}`
-            );
-          }
-          resolve();
-        }, 1500);
-
-        const seeked = () => {
-          clearTimeout(seekTimeout);
+      // Wait for seeking to complete with timeout
+      await new Promise<void>((resolve) => {
+        const seekHandler = () => {
+          sourceVideo.removeEventListener('seeked', seekHandler);
           resolve();
         };
 
-        sourceVideo.addEventListener('seeked', seeked, { once: true });
+        sourceVideo.addEventListener('seeked', seekHandler, { once: true });
+        setTimeout(resolve, 1000); // Timeout fallback
       });
-    } catch (e) {
-      canSeekReliably = false;
-      mobileLog(
-        `Seek test error: ${e instanceof Error ? e.message : 'Unknown error'}`
-      );
-    }
 
-    // 4. Choose processing strategy based on seek capabilities
-    if (!canSeekReliably) {
-      // APPROACH A: Use time-based extraction for devices with poor seeking
-      mobileLog('Using continuous playback approach for unreliable seeking');
-      return await continuousPlaybackExtraction(
-        sourceVideo,
-        compressionCanvas,
-        compCtx,
-        startTime,
-        endTime,
-        targetWidth,
-        targetHeight,
-        compressionSettings
+      // Extract frames manually - critical for iOS
+      const duration = endTime - startTime;
+      const totalFrames = Math.ceil(duration * compressionSettings.framerate);
+
+      mobileLog(`Starting frame extraction: ${totalFrames} frames`);
+
+      for (let i = 0; i < totalFrames; i++) {
+        // Calculate time for this frame
+        const frameTime = startTime + i / compressionSettings.framerate;
+
+        // Don't go past the end time
+        if (frameTime > endTime) break;
+
+        // Update video position (less frequent seeking for better stability)
+        if (i % 5 === 0) {
+          sourceVideo.currentTime = frameTime;
+
+          // Short delay to allow seeking
+          await new Promise((r) => setTimeout(r, 50));
+        }
+
+        // Draw the current frame
+        compCtx.drawImage(sourceVideo, 0, 0, targetWidth, targetHeight);
+
+        // Log progress periodically
+        if (i % 10 === 0) {
+          mobileLog(`Captured frame ${i}/${totalFrames}`);
+        }
+
+        // Small delay to allow UI updates
+        await new Promise((r) => setTimeout(r, 10));
+      }
+
+      // Stop recording after a slight delay
+      setTimeout(() => {
+        try {
+          recorder.stop();
+        } catch (e) {
+          mobileLog(
+            `Error stopping recorder: ${e instanceof Error ? e.message : 'Unknown error'}`
+          );
+        }
+      }, 500);
+
+      // Return the recorded blob
+      return await recordingPromise;
+    } catch (e) {
+      mobileLog(
+        `iOS frame capture error: ${e instanceof Error ? e.message : 'Unknown error'}`
       );
-    } else {
-      // APPROACH B: Use frame-by-frame extraction for devices with good seeking
-      mobileLog('Using frame-by-frame extraction approach');
-      return await frameByFrameExtraction(
-        sourceVideo,
-        compressionCanvas,
-        compCtx,
-        startTime,
-        endTime,
-        targetWidth,
-        targetHeight,
-        compressionSettings
-      );
+      return null;
     }
   }
 
@@ -702,118 +758,116 @@ function EditPage() {
     keyframeInterval: number;
   }
 
-  // Approach A: Continuous playback extraction (more reliable on problematic iOS devices)
-  async function continuousPlaybackExtraction(
+  async function singlePassIOSExtraction(
     sourceVideo: HTMLVideoElement,
-    canvas: HTMLCanvasElement,
-    ctx: CanvasRenderingContext2D,
     startTime: number,
-    endTime: number,
-    width: number,
-    height: number,
-    settings: CompressionSettings
+    endTime: number
   ): Promise<Blob | null> {
-    // Create a MediaRecorder with iOS-compatible settings
-    let mimeType = 'video/mp4';
-    let codecOptions: Record<string, any> = {};
+    mobileLog(
+      `Starting iOS-compatible extraction: ${startTime}s to ${endTime}s`
+    );
 
-    // Test for codec support
-    if (MediaRecorder.isTypeSupported('video/mp4')) {
-      mimeType = 'video/mp4';
-      mobileLog('Using MP4 recording');
-    } else if (MediaRecorder.isTypeSupported('video/webm')) {
-      mimeType = 'video/webm';
-      mobileLog('Using WebM recording');
-    } else {
-      mimeType = '';
-      mobileLog('Using default browser codec');
+    // Create a smaller canvas for higher compatibility
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.min(360, sourceVideo.videoWidth || 360);
+    canvas.height = Math.min(240, sourceVideo.videoHeight || 240);
+    const ctx = canvas.getContext('2d', { alpha: false });
+
+    if (!ctx) {
+      mobileLog('Failed to create canvas context');
+      return null;
     }
 
-    if (mimeType) {
-      codecOptions = {
-        mimeType: mimeType,
-        videoBitsPerSecond: settings.videoBitrate,
-      };
-    }
-
-    // Start video at the beginning
-    sourceVideo.currentTime = startTime;
-
-    // Create a stream from the canvas
-    const canvasStream = canvas.captureStream(settings.framerate);
-
-    // Set up recorder
-    let recorder: MediaRecorder;
     try {
-      recorder = new MediaRecorder(
-        canvasStream,
-        codecOptions as MediaRecorderOptions
-      );
-    } catch (e) {
-      mobileLog(
-        `MediaRecorder error with options, trying without options: ${e instanceof Error ? e.message : 'Unknown error'}`
-      );
-      recorder = new MediaRecorder(canvasStream);
-    }
+      // Find the most compatible recording options
+      let mimeType = '';
+      let recorder: MediaRecorder;
 
-    const chunks: BlobPart[] = [];
-    recorder.ondataavailable = (e: BlobEvent) => chunks.push(e.data);
+      // Test MIME types in order of preference
+      const mimeTypes = [
+        'video/mp4',
+        'video/webm',
+        'video/webm;codecs=h264',
+        'video/webm;codecs=vp9',
+        'video/webm;codecs=vp8',
+        '',
+      ];
 
-    // Set up recording promise
-    const recordingPromise = new Promise<Blob>((resolve, reject) => {
-      let recordingTimeout: NodeJS.Timeout | undefined;
-
-      recorder.onstop = () => {
-        clearTimeout(recordingTimeout);
-        try {
-          const videoType = mimeType || 'video/webm';
-          const blob = new Blob(chunks, { type: videoType });
-
-          mobileLog(`Recording completed: ${blob.size / 1024}KB`);
-          resolve(blob);
-        } catch (e) {
-          reject(e);
+      for (const type of mimeTypes) {
+        if (!type || MediaRecorder.isTypeSupported(type)) {
+          mimeType = type;
+          mobileLog(`Using mime type: ${type || 'browser default'}`);
+          break;
         }
-      };
+      }
 
-      recorder.onerror = (event: Event): void => {
-        clearTimeout(recordingTimeout);
-        reject(
-          new Error(
-            `MediaRecorder error: ${event instanceof ErrorEvent ? event.message : 'Unknown error'}`
-          )
+      // Create recorder with the most basic options possible
+      const stream = canvas.captureStream(15); // Lower framerate for iOS
+
+      try {
+        recorder = new MediaRecorder(
+          stream,
+          mimeType ? { mimeType } : undefined
         );
-      };
+      } catch (e) {
+        mobileLog(`Failed to create recorder with mime type, using default`);
+        recorder = new MediaRecorder(stream);
+      }
 
-      // Safety timeout
+      const chunks: BlobPart[] = [];
+      recorder.ondataavailable = (e) => chunks.push(e.data);
+
+      // Start recording
+      recorder.start(200); // Smaller chunks for iOS
+
+      // Set up promise to track recording completion
+      const recordingPromise = new Promise<Blob>((resolve, reject) => {
+        recorder.onstop = () => {
+          const blob = new Blob(chunks, { type: mimeType || 'video/webm' });
+          mobileLog(`Recording completed, size: ${blob.size / 1024}KB`);
+          resolve(blob);
+        };
+        recorder.onerror = (e) => reject(e);
+      });
+
+      // Position video at start time
+      sourceVideo.currentTime = startTime;
+
+      // Wait for video to be ready
+      await new Promise<void>((resolve) => {
+        const seekHandler = () => {
+          sourceVideo.removeEventListener('seeked', seekHandler);
+          resolve();
+        };
+        sourceVideo.addEventListener('seeked', seekHandler, { once: true });
+        setTimeout(resolve, 1000); // Fallback
+      });
+
+      // Instead of relying on video.play(), manually step through frames
+      const frameInterval = 1000 / 15; // 15fps
       const duration = endTime - startTime;
-      recordingTimeout = setTimeout(
-        () => {
-          try {
-            if (recorder.state === 'recording') {
-              recorder.stop();
-            }
-          } catch (e) {
-            reject(e);
-          }
-        },
-        duration * 1000 + 5000
-      ); // Duration plus safety margin
-    });
+      const totalFrames = Math.ceil(duration * 15);
 
-    // Start recording
-    recorder.start(1000); // 1 second chunks
+      for (let i = 0; i < totalFrames; i++) {
+        const currentTime = startTime + i * (1 / 15);
 
-    // Draw frames while video plays
-    const drawFrame = (): void => {
-      if (sourceVideo.currentTime < endTime) {
-        // Draw current frame to canvas
-        ctx.drawImage(sourceVideo, 0, 0, width, height);
+        if (currentTime > endTime) break;
 
-        // Continue animation if still within trim range
-        requestAnimationFrame(drawFrame);
-      } else {
-        // Reached the end time, stop recording
+        // Update video position (less frequent for stability)
+        if (i % 3 === 0) {
+          sourceVideo.currentTime = currentTime;
+          await new Promise((r) => setTimeout(r, 30));
+        }
+
+        // Draw current frame
+        ctx.drawImage(sourceVideo, 0, 0, canvas.width, canvas.height);
+
+        // Wait for next frame time
+        await new Promise((r) => setTimeout(r, 30));
+      }
+
+      // Stop recording
+      setTimeout(() => {
         try {
           recorder.stop();
         } catch (e) {
@@ -821,22 +875,155 @@ function EditPage() {
             `Error stopping recorder: ${e instanceof Error ? e.message : 'Unknown error'}`
           );
         }
-      }
-    };
+      }, 500);
 
-    // Play the video to drive the extraction
-    try {
-      sourceVideo.play();
-      drawFrame(); // Start animation loop
+      return await recordingPromise;
     } catch (e) {
       mobileLog(
-        `Error during playback: ${e instanceof Error ? e.message : 'Unknown error'}`
+        `Single pass extraction error: ${e instanceof Error ? e.message : 'Unknown error'}`
       );
       return null;
     }
+  }
 
-    // Wait for recording to complete
-    return await recordingPromise;
+  async function imageSequenceIOSWorkaround(
+    sourceVideo: HTMLVideoElement,
+    startTime: number,
+    endTime: number
+  ): Promise<Blob | null> {
+    mobileLog('Using image sequence workaround for iOS');
+
+    try {
+      // Capture a series of JPEG images
+      const framerate = 10; // Lower for compatibility
+      const duration = endTime - startTime;
+      const frameCount = Math.ceil(duration * framerate);
+      const images: string[] = [];
+
+      // Create temporary canvas for frame capture
+      const canvas = document.createElement('canvas');
+      const width = Math.min(360, sourceVideo.videoWidth || 360);
+      const height = Math.min(240, sourceVideo.videoHeight || 240);
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d', { alpha: false });
+
+      if (!ctx) {
+        throw new Error('Failed to create canvas context');
+      }
+
+      // Capture frames
+      for (let i = 0; i < frameCount; i++) {
+        const frameTime = startTime + i / framerate;
+
+        // Set video position
+        sourceVideo.currentTime = frameTime;
+
+        // Wait for seeking to complete
+        await new Promise<void>((resolve) => {
+          const seekHandler = () => {
+            sourceVideo.removeEventListener('seeked', seekHandler);
+            resolve();
+          };
+          sourceVideo.addEventListener('seeked', seekHandler, { once: true });
+          setTimeout(resolve, 200); // Fallback
+        });
+
+        // Draw and capture frame
+        ctx.drawImage(sourceVideo, 0, 0, width, height);
+        const imageData = canvas.toDataURL('image/jpeg', 0.7);
+        images.push(imageData);
+
+        // Log progress
+        if (i % 5 === 0) {
+          mobileLog(`Captured frame ${i + 1}/${frameCount}`);
+        }
+      }
+
+      mobileLog(`Captured ${images.length} frames as images`);
+
+      // Now build a video from these images
+      const videoCanvas = document.createElement('canvas');
+      videoCanvas.width = width;
+      videoCanvas.height = height;
+      const videoCtx = videoCanvas.getContext('2d');
+
+      if (!videoCtx) {
+        throw new Error('Failed to create video canvas context');
+      }
+
+      // Use MediaRecorder to create a video
+      let mimeType = '';
+      for (const type of ['video/mp4', 'video/webm', '']) {
+        if (!type || MediaRecorder.isTypeSupported(type)) {
+          mimeType = type;
+          break;
+        }
+      }
+
+      const stream = videoCanvas.captureStream(framerate);
+      const recorder = new MediaRecorder(
+        stream,
+        mimeType ? { mimeType } : undefined
+      );
+
+      const chunks: BlobPart[] = [];
+      recorder.ondataavailable = (e) => chunks.push(e.data);
+
+      // Create promise for recording completion
+      const recordingPromise = new Promise<Blob>((resolve) => {
+        recorder.onstop = () => {
+          const blob = new Blob(chunks, { type: mimeType || 'video/webm' });
+          mobileLog(`Video created from images: ${blob.size / 1024}KB`);
+          resolve(blob);
+        };
+      });
+
+      // Start recording
+      recorder.start(100);
+
+      // Play back the image sequence
+      let frameIndex = 0;
+      const playImages = async () => {
+        if (frameIndex < images.length) {
+          // Load the image
+          const img = new Image();
+          img.onload = () => {
+            // Draw the image to canvas
+            videoCtx.drawImage(img, 0, 0, width, height);
+
+            // Move to next frame
+            frameIndex++;
+
+            // Schedule next frame
+            setTimeout(playImages, 1000 / framerate);
+          };
+          img.src = images[frameIndex];
+        } else {
+          // All frames done, stop recording
+          setTimeout(() => {
+            try {
+              recorder.stop();
+            } catch (e) {
+              mobileLog(
+                `Error stopping recorder: ${e instanceof Error ? e.message : 'Unknown error'}`
+              );
+            }
+          }, 200);
+        }
+      };
+
+      // Start playback
+      playImages();
+
+      // Return the resulting video blob
+      return await recordingPromise;
+    } catch (e) {
+      mobileLog(
+        `Image sequence error: ${e instanceof Error ? e.message : 'Unknown error'}`
+      );
+      return null;
+    }
   }
 
   // Approach B: Frame-by-frame extraction (for devices with good seeking)
@@ -1118,16 +1305,12 @@ function EditPage() {
     const simulationInterval = setInterval((): void => {
       // Different acceleration rates for different phases
       if (lastProgress < 30) {
-        // Preparing phase - move a bit faster
         updateProgress(lastProgress + 0.3);
       } else if (lastProgress < 70) {
-        // Compression phase - move slower
         updateProgress(lastProgress + 0.15);
       } else if (lastProgress < 90) {
-        // Upload phase - move very slowly
         updateProgress(lastProgress + 0.1);
       } else if (lastProgress < 98) {
-        // Final phase - barely move
         updateProgress(lastProgress + 0.05);
       }
     }, 200);
@@ -1140,7 +1323,7 @@ function EditPage() {
 
       mobileLog(`Starting video processing`);
 
-      // 2. Set up video and canvas for processing
+      // 2. Set up video for processing
       const sourceVideo: HTMLVideoElement = document.createElement('video');
       sourceVideo.src = videoSrc;
       sourceVideo.muted = true;
@@ -1153,8 +1336,8 @@ function EditPage() {
           );
           resolve(true);
         };
-        sourceVideo.onerror = (e) => {
-          mobileLog(`Error loading source video: ${e}`);
+        sourceVideo.onerror = () => {
+          mobileLog('Error loading source video');
           resolve(false);
         };
         setTimeout(() => resolve(false), 3000);
@@ -1164,20 +1347,7 @@ function EditPage() {
         throw new Error('Source video could not be loaded');
       }
 
-      // Create a canvas with the same dimensions as the video
-      const canvas = document.createElement('canvas');
-      canvas.width = sourceVideo.videoWidth || 640;
-      canvas.height = sourceVideo.videoHeight || 480;
-      const ctx = canvas.getContext('2d');
-
-      if (!ctx) {
-        throw new Error('Could not create canvas context');
-      }
-
-      // 3. Perform the trimming operation
-      console.log(`Starting trim operation from ${startTime}s to ${endTime}s`);
-
-      // Progress update during trimming
+      // 3. Check trim duration
       const trimDuration = endTime - startTime;
       if (trimDuration > 8) {
         clearInterval(simulationInterval);
@@ -1188,20 +1358,23 @@ function EditPage() {
         return;
       }
 
-      // Improved iOS detection
+      // 4. Detect iOS
       const isiOSDevice =
         /iPad|iPhone|iPod/.test(navigator.userAgent) ||
         (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 
       mobileLog(`Device detected as iOS: ${isiOSDevice}`);
 
-      // ----- iOS Specific Processing -----
       if (isiOSDevice) {
-        mobileLog(`Using iOS-specific video processing with compression`);
+        mobileLog('Using iOS-specific processing approaches');
 
+        // Try multiple approaches in sequence until one works
+        let processedBlob: Blob | null = null;
+
+        // Approach 1: Try the improved processVideoForIOS function
         try {
-          // Process video using the improved iOS function
-          const processedBlob = await processVideoForIOS(
+          mobileLog('Trying primary iOS method');
+          processedBlob = await processVideoForIOS(
             sourceVideo,
             startTime,
             endTime
@@ -1209,73 +1382,93 @@ function EditPage() {
 
           if (processedBlob && processedBlob.size >= 10000) {
             mobileLog(
-              `Successfully created trimmed video: ${processedBlob.size / 1024}KB`
+              `Primary method successful: ${processedBlob.size / 1024}KB`
             );
-
-            // Upload the processed video
-            await uploadBlobToGCS(
-              processedBlob,
-              sourceVideo.videoWidth > 0
-                ? Math.min(sourceVideo.videoWidth, 640)
-                : 640,
-              sourceVideo.videoHeight > 0
-                ? Math.min(sourceVideo.videoHeight, 360)
-                : 360,
-              endTime - startTime
-            );
-
-            clearInterval(simulationInterval);
-            return;
           } else {
-            mobileLog('Processed video too small or failed, trying fallback');
+            mobileLog('Primary method failed or produced too small output');
+            processedBlob = null;
           }
         } catch (e) {
-          if (e instanceof Error) {
-            mobileLog(`iOS video processing error: ${e.message}`);
-          } else {
-            mobileLog('iOS video processing error: Unknown error');
-          }
-        }
-
-        // If we get here, we need to try the fallback approach
-        mobileLog('Using simplified fallback approach');
-
-        try {
-          // Direct extraction fallback
-          const fallbackBlob = await extractVideoSegmentFallback(
-            videoSrc,
-            startTime,
-            endTime
+          mobileLog(
+            `Primary method error: ${e instanceof Error ? e.message : 'Unknown error'}`
           );
+        }
 
-          if (fallbackBlob && fallbackBlob.size >= 10000) {
-            await uploadBlobToGCS(
-              fallbackBlob,
-              sourceVideo.videoWidth || 640,
-              sourceVideo.videoHeight || 480,
-              endTime - startTime
+        // Approach 2: Try single pass extraction if first method failed
+        if (!processedBlob) {
+          try {
+            mobileLog('Trying secondary iOS method');
+            processedBlob = await singlePassIOSExtraction(
+              sourceVideo,
+              startTime,
+              endTime
             );
-            clearInterval(simulationInterval);
-            return;
-          }
-        } catch (fallbackError) {
-          if (fallbackError instanceof Error) {
-            mobileLog(`Fallback method failed: ${fallbackError.message}`);
-          } else {
-            mobileLog('Fallback method failed with an unknown error');
+
+            if (processedBlob && processedBlob.size >= 10000) {
+              mobileLog(
+                `Secondary method successful: ${processedBlob.size / 1024}KB`
+              );
+            } else {
+              mobileLog('Secondary method failed or produced too small output');
+              processedBlob = null;
+            }
+          } catch (e) {
+            mobileLog(
+              `Secondary method error: ${e instanceof Error ? e.message : 'Unknown error'}`
+            );
           }
         }
 
-        // Last resort fallback - use the original video but log warning
-        mobileLog(
-          '⚠️ WARNING: All trimming methods failed, using original video'
-        );
+        // Approach 3: Try image sequence workaround if previous methods failed
+        if (!processedBlob) {
+          try {
+            mobileLog('Trying image sequence method');
+            processedBlob = await imageSequenceIOSWorkaround(
+              sourceVideo,
+              startTime,
+              endTime
+            );
+
+            if (processedBlob && processedBlob.size >= 10000) {
+              mobileLog(
+                `Image sequence method successful: ${processedBlob.size / 1024}KB`
+              );
+            } else {
+              mobileLog(
+                'Image sequence method failed or produced too small output'
+              );
+              processedBlob = null;
+            }
+          } catch (e) {
+            mobileLog(
+              `Image sequence method error: ${e instanceof Error ? e.message : 'Unknown error'}`
+            );
+          }
+        }
+
+        // If we have a processed blob, upload it
+        if (processedBlob && processedBlob.size >= 10000) {
+          await uploadBlobToGCS(
+            processedBlob,
+            sourceVideo.videoWidth > 0
+              ? Math.min(sourceVideo.videoWidth, 640)
+              : 640,
+            sourceVideo.videoHeight > 0
+              ? Math.min(sourceVideo.videoHeight, 360)
+              : 360,
+            endTime - startTime
+          );
+          clearInterval(simulationInterval);
+          return;
+        }
+
+        // Last resort: Use original video with warning
+        mobileLog('⚠️ WARNING: All iOS methods failed, using original video');
         const response = await fetch(videoSrc);
         const originalBlob = await response.blob();
 
-        // Set a user-visible warning
         setUploadError(
-          'Video trimming failed. Using original video for analysis.'
+          'Video processing not supported on this device. Using original video for analysis.'
         );
 
         await uploadBlobToGCS(
@@ -1295,8 +1488,8 @@ function EditPage() {
       // Call the standardTrimVideo function
       const trimmedBlob = await standardTrimVideo(
         sourceVideo,
-        canvas,
-        ctx,
+        canvasRef.current!,
+        canvasRef.current?.getContext('2d')!,
         startTime,
         endTime
       );
@@ -1364,8 +1557,8 @@ function EditPage() {
           originalStart: startTime.toString(),
           originalEnd: endTime.toString(),
           trimmed: 'true',
-          width: canvas.width.toString(),
-          height: canvas.height.toString(),
+          width: canvasRef.current?.width.toString() || '0',
+          height: canvasRef.current?.height.toString() || '0',
         },
       });
 
