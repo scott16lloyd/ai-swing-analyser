@@ -453,7 +453,14 @@ function EditPage() {
     }
   }, [startTime]);
 
-  // Upload trimmed video to GCS
+  const isIOS = () => {
+    return (
+      ['iPad', 'iPhone', 'iPod'].includes(navigator.platform) ||
+      // iPad on iOS 13+ detection
+      (navigator.userAgent.includes('Mac') && 'ontouchend' in document)
+    );
+  };
+
   async function uploadTrimmedVideo() {
     // Reset states
     setIsUploading(true);
@@ -542,7 +549,7 @@ function EditPage() {
 
       updateProgress(30);
 
-      // Compress the trimmed video before upload
+      // Log original size
       console.log('Original size:', trimmedBlob.size / (1024 * 1024), 'MB');
 
       // Import ffmpeg only when needed (dynamic import)
@@ -551,36 +558,144 @@ function EditPage() {
 
       // Create FFmpeg instance
       const ffmpeg = new FFmpeg();
+
+      // Log debug information
+      console.log('Loading FFmpeg...');
+      mobileLog('Loading FFmpeg for compression...');
+
       await ffmpeg.load();
+      console.log('FFmpeg loaded');
+      mobileLog('FFmpeg loaded successfully');
 
       // Write input file
       const inputFileName = 'input.mp4';
       const outputFileName = 'compressed.mp4';
+
+      console.log('Writing file to FFmpeg...');
+      mobileLog('Writing input file to FFmpeg...');
+
       await ffmpeg.writeFile(inputFileName, await fetchFile(trimmedBlob));
+      console.log('File written to FFmpeg');
+      mobileLog('Input file written successfully');
 
       updateProgress(40);
 
-      // Set compression parameters - adjust these for quality vs size
-      await ffmpeg.exec([
-        '-i',
-        inputFileName,
-        '-c:v',
-        'libx264',
-        '-profile:v',
-        'baseline',
-        '-level',
-        '3.0',
-        '-pix_fmt',
-        'yuv420p',
-        '-preset',
-        'fast',
-        '-crf',
-        '28',
-        '-an', // Remove audio
-        '-movflags',
-        '+faststart',
-        outputFileName,
-      ]);
+      // Check if we're on iOS
+      const isiOSDevice = isIOS();
+      console.log('Is iOS device:', isiOSDevice);
+      mobileLog(`Device detected as iOS: ${isiOSDevice}`);
+
+      // Create compression command based on device
+      let ffmpegArgs = [];
+
+      if (isiOSDevice) {
+        mobileLog('Using VideoToolbox hardware encoding for iOS');
+        console.log('Using VideoToolbox hardware encoding');
+
+        // VideoToolbox encoding for iOS devices
+        ffmpegArgs = [
+          '-i',
+          inputFileName,
+          '-c:v',
+          'h264_videotoolbox', // Use VideoToolbox encoder
+          '-b:v',
+          '2M', // Target bitrate
+          '-bufsize',
+          '2M', // Buffer size
+          '-color_range',
+          '1', // Full color range for better compatibility
+          '-pix_fmt',
+          'yuv420p', // Standard pixel format
+          '-movflags',
+          '+faststart', // Web optimization
+          '-an', // Remove audio
+          outputFileName,
+        ];
+      } else {
+        mobileLog('Using standard libx264 encoding');
+        console.log('Using standard libx264 encoding');
+
+        // Standard encoding for non-iOS devices
+        ffmpegArgs = [
+          '-i',
+          inputFileName,
+          '-c:v',
+          'libx264',
+          '-profile:v',
+          'baseline',
+          '-level',
+          '3.0',
+          '-pix_fmt',
+          'yuv420p',
+          '-preset',
+          'fast',
+          '-crf',
+          '28',
+          '-an', // Remove audio
+          '-movflags',
+          '+faststart',
+          outputFileName,
+        ];
+      }
+
+      // Log the command we're going to run
+      console.log('FFmpeg command:', ffmpegArgs.join(' '));
+      mobileLog(`Running FFmpeg with args: ${ffmpegArgs.join(' ')}`);
+
+      // Execute the compression
+      try {
+        await ffmpeg.exec(ffmpegArgs);
+        console.log('Compression completed');
+        mobileLog('Compression completed successfully');
+      } catch (compressError) {
+        console.error('Compression error:', compressError);
+        mobileLog(`Compression error: ${compressError || 'Unknown error'}`);
+
+        // If VideoToolbox fails, fall back to simpler encoding
+        if (isiOSDevice) {
+          mobileLog('Falling back to simpler encoding for iOS');
+          console.log('VideoToolbox failed, trying fallback encoding');
+
+          // Try a simpler encoding approach as fallback
+          const fallbackArgs = [
+            '-i',
+            inputFileName,
+            '-c:v',
+            'h264_videotoolbox',
+            '-preset',
+            'fast',
+            '-pix_fmt',
+            'yuv420p',
+            '-an',
+            outputFileName,
+          ];
+
+          try {
+            await ffmpeg.exec(fallbackArgs);
+            console.log('Fallback compression completed');
+            mobileLog('Fallback compression successful');
+          } catch (fallbackError) {
+            console.error('Fallback compression error:', fallbackError);
+            mobileLog(
+              `Fallback compression failed: ${fallbackError || 'Unknown error'}`
+            );
+
+            // If all else fails, try with minimal settings (just copy)
+            const minimalArgs = [
+              '-i',
+              inputFileName,
+              '-c:v',
+              'copy',
+              '-an',
+              outputFileName,
+            ];
+
+            await ffmpeg.exec(minimalArgs);
+            console.log('Minimal compression completed');
+            mobileLog('Using minimal compression (copy)');
+          }
+        }
+      }
 
       updateProgress(70);
 
@@ -601,27 +716,88 @@ function EditPage() {
       });
 
       // Read the compressed file
-      const data = await ffmpeg.readFile(outputFileName);
-      const compressedBlob = new Blob([data], { type: 'video/mp4' });
-      console.log(
-        'Compressed size:',
-        compressedBlob.size / (1024 * 1024),
-        'MB'
-      );
-
-      updateProgress(80);
-
-      // 6. Upload the trimmed video to GCS using signed URL
-      const uploadResponse = await fetch(url, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'video/mp4' },
-        body: compressedBlob,
-      });
-
-      if (!uploadResponse.ok) {
-        throw new Error(
-          `Upload failed: ${uploadResponse.status} ${uploadResponse.statusText}`
+      try {
+        const data = await ffmpeg.readFile(outputFileName);
+        const compressedBlob = new Blob([data], { type: 'video/mp4' });
+        console.log(
+          'Compressed size:',
+          compressedBlob.size / (1024 * 1024),
+          'MB'
         );
+        mobileLog(
+          `Compressed size: ${(compressedBlob.size / (1024 * 1024)).toFixed(2)} MB`
+        );
+
+        // Check if the compressed file size is too small (potentially corrupted)
+        if (compressedBlob.size < 10000) {
+          // Less than 10KB
+          mobileLog(
+            `WARNING: Compressed file suspiciously small (${compressedBlob.size} bytes)`
+          );
+          console.warn(
+            `Compressed file is suspiciously small: ${compressedBlob.size} bytes`
+          );
+
+          // If the compression resulted in a tiny file, use the original
+          if (trimmedBlob.size > 10000) {
+            mobileLog('Using original trimmed file instead of compressed');
+            console.log('Using original trimmed file instead of compressed');
+            updateProgress(80);
+
+            // Upload the original trimmed video
+            const uploadResponse = await fetch(url, {
+              method: 'PUT',
+              headers: { 'Content-Type': 'video/mp4' },
+              body: trimmedBlob,
+            });
+
+            if (!uploadResponse.ok) {
+              throw new Error(
+                `Upload failed: ${uploadResponse.status} ${uploadResponse.statusText}`
+              );
+            }
+          } else {
+            throw new Error(
+              'Both compressed and original videos are too small to be valid'
+            );
+          }
+        } else {
+          updateProgress(80);
+
+          // Upload the compressed video
+          const uploadResponse = await fetch(url, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'video/mp4' },
+            body: compressedBlob,
+          });
+
+          if (!uploadResponse.ok) {
+            throw new Error(
+              `Upload failed: ${uploadResponse.status} ${uploadResponse.statusText}`
+            );
+          }
+        }
+      } catch (readError) {
+        console.error('Error reading compressed file:', readError);
+        mobileLog(`Error reading compressed file: ${readError}`);
+
+        // If reading the compressed file fails, use the original trimmed file
+        updateProgress(80);
+
+        console.log('Falling back to original trimmed file');
+        mobileLog('Falling back to original trimmed file for upload');
+
+        const uploadResponse = await fetch(url, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'video/mp4' },
+          body: trimmedBlob,
+        });
+
+        if (!uploadResponse.ok) {
+          throw new Error(
+            `Upload failed: ${uploadResponse.status} ${uploadResponse.statusText}`
+          );
+        }
       }
 
       clearInterval(simulationInterval);
@@ -652,6 +828,7 @@ function EditPage() {
       // router.push('/analyse/results');
     } catch (error) {
       console.error('Error creating or uploading trimmed video:', error);
+      mobileLog(`Final error: ${(error as Error).message}`);
       setUploadError((error as Error).message);
     } finally {
       clearInterval(simulationInterval);
