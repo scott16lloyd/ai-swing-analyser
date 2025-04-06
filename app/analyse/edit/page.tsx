@@ -643,7 +643,7 @@ function EditPage() {
       );
 
       // Redirect to results page
-      router.push('/analyse/results');
+      // router.push('/analyse/results');
     } catch (error) {
       console.error('Error creating or uploading trimmed video:', error);
       setUploadError((error as Error).message);
