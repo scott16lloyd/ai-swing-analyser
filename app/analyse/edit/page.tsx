@@ -722,7 +722,7 @@ function EditPage() {
         }
 
         // Direct recording from the canvas with compressed dimensions
-        let frames = [];
+        let frames: ImageData[] = [];
         const framerate = compressionSettings.framerate;
         const frameCount = Math.ceil(trimDuration * framerate);
 
