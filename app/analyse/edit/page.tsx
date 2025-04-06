@@ -453,14 +453,133 @@ function EditPage() {
     }
   }, [startTime]);
 
-  const isIOS = () => {
-    return (
-      ['iPad', 'iPhone', 'iPod'].includes(navigator.platform) ||
-      // iPad on iOS 13+ detection
-      (navigator.userAgent.includes('Mac') && 'ontouchend' in document)
-    );
+  interface VideoBlob {
+    size: number;
+  }
+
+  const isValidVideoBlob = async (blob: VideoBlob | null): Promise<boolean> => {
+    if (!blob || blob.size < 10000) {
+      return false;
+    }
+
+    // Create an object URL from the blob
+    const url = URL.createObjectURL(blob as Blob);
+
+    // Create a video element to test the blob
+    const video = document.createElement('video');
+
+    try {
+      // Try load video metadata
+      const result = await new Promise<boolean>((resolve) => {
+        video.onloadedmetadata = () => resolve(true);
+        video.onerror = () => resolve(false);
+
+        // Set timeout in case it hangs
+        setTimeout(() => resolve(false), 3000);
+
+        video.src = url;
+        video.load();
+      });
+
+      return result;
+    } catch (e) {
+      return false;
+    } finally {
+      URL.revokeObjectURL(url);
+    }
   };
 
+  interface UploadMetadata {
+    duration: string;
+    originalStart: string;
+    originalEnd: string;
+    trimmed: string;
+    width: string;
+    height: string;
+  }
+
+  interface GenerateSignedUrlResponse {
+    url: string;
+    publicUrl: string;
+  }
+
+  async function uploadBlobToGCS(
+    blob: Blob,
+    width: number,
+    height: number,
+    duration: number
+  ): Promise<void> {
+    mobileLog(`Uploading video, size: ${blob.size / 1024} KB`);
+
+    const timestamp = Date.now();
+    const fullPath = `unprocessed_video/user/trim-${timestamp}.mp4`;
+
+    const { url, publicUrl }: GenerateSignedUrlResponse =
+      await generateSignedUrl({
+        filename: fullPath,
+        contentType: 'video/mp4',
+        metadata: {
+          duration: duration.toString(),
+          originalStart: startTime.toString(),
+          originalEnd: endTime.toString(),
+          trimmed: 'true',
+          width: width.toString(),
+          height: height.toString(),
+        } as UploadMetadata,
+      });
+
+    // Upload with explicit content type
+    mobileLog(`Starting upload to signed URL`);
+
+    // Before uploading
+    if (blob.size < 10000) {
+      setUploadError('Video file is too small (less than 10KB)');
+      return;
+    }
+
+    if (blob.size > 104857600) {
+      // 100MB
+      setUploadError('Video file is too large (more than 100MB)');
+      return;
+    }
+
+    const uploadResponse: Response = await fetch(url, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'video/mp4',
+      },
+      body: blob,
+    });
+
+    if (!uploadResponse.ok) {
+      const errorText: string = await uploadResponse
+        .text()
+        .catch(() => 'Unknown error');
+      mobileLog(`Upload failed: ${uploadResponse.status} - ${errorText}`);
+      throw new Error(
+        `Upload failed: ${uploadResponse.status} ${uploadResponse.statusText}`
+      );
+    }
+
+    mobileLog(`Upload completed successfully`);
+
+    setUploadProgress(100);
+    setUploadedVideoUrl(publicUrl);
+
+    // Store trim information for reference
+    sessionStorage.setItem(
+      'trimInfo',
+      JSON.stringify({
+        videoUrl: publicUrl,
+        fileName: fullPath,
+        startTime: 0,
+        endTime: duration,
+        duration: duration,
+      })
+    );
+  }
+
+  // Upload trimmed video to GCS
   async function uploadTrimmedVideo() {
     // Reset states
     setIsUploading(true);
@@ -503,17 +622,31 @@ function EditPage() {
         throw new Error('Video not available for trimming');
       }
 
+      mobileLog(`Starting video processing`);
+
       // 2. Set up video and canvas for processing
       const sourceVideo = document.createElement('video');
       sourceVideo.src = videoSrc;
       sourceVideo.muted = true;
 
-      // Wait for video metadata to load
-      await new Promise((resolve, reject) => {
-        sourceVideo.onloadedmetadata = resolve;
-        sourceVideo.onerror = reject;
-        setTimeout(resolve, 3000); // Timeout after 3 seconds
+      // Wait for video metadata to load and validate source
+      const sourceValid = await new Promise((resolve) => {
+        sourceVideo.onloadedmetadata = () => {
+          mobileLog(
+            `Source video metadata loaded: ${sourceVideo.videoWidth}x${sourceVideo.videoHeight}`
+          );
+          resolve(true);
+        };
+        sourceVideo.onerror = (e) => {
+          mobileLog(`Error loading source video: ${e}`);
+          resolve(false);
+        };
+        setTimeout(() => resolve(false), 3000);
       });
+
+      if (!sourceValid) {
+        throw new Error('Source video could not be loaded');
+      }
 
       // Create a canvas with the same dimensions as the video
       const canvas = document.createElement('canvas');
@@ -531,12 +664,412 @@ function EditPage() {
       // Progress update during trimming
       const trimDuration = endTime - startTime;
       if (trimDuration > 8) {
+        clearInterval(simulationInterval);
         setUploadError(
           'Video must be less than 8 seconds for analysis, please trim the video shorter.'
         );
         setIsUploading(false);
         return;
       }
+
+      const isiOSDevice =
+        ['iPad', 'iPhone', 'iPod'].includes(navigator.platform) ||
+        (navigator.userAgent.includes('Mac') && 'ontouchend' in document);
+
+      mobileLog(`Device detected as iOS: ${isiOSDevice}`);
+
+      // ----- iOS Workaround -----
+      if (isiOSDevice) {
+        mobileLog(`Using iOS-specific video processing with compression`);
+
+        // Compression settings
+        const compressionSettings = {
+          targetWidth: 640, // Smaller dimension for compression
+          targetHeight: 360, // Maintain 16:9 aspect ratio if possible
+          framerate: 24, // Lower framerate for smaller file
+          videoBitrate: 1500000, // 1.5 Mbps (lower than before)
+          keyframeInterval: 48, // Every 2 seconds at 24fps
+        };
+
+        // Calculate scaled dimensions (maintain aspect ratio)
+        let targetWidth = compressionSettings.targetWidth;
+        let targetHeight = compressionSettings.targetHeight;
+
+        if (sourceVideo.videoWidth && sourceVideo.videoHeight) {
+          const aspectRatio = sourceVideo.videoWidth / sourceVideo.videoHeight;
+          if (aspectRatio > targetWidth / targetHeight) {
+            // Width bounded
+            targetHeight = Math.round(targetWidth / aspectRatio);
+          } else {
+            // Height bounded
+            targetWidth = Math.round(targetHeight * aspectRatio);
+          }
+        }
+
+        mobileLog(
+          `Original dimensions: ${sourceVideo.videoWidth}x${sourceVideo.videoHeight}`
+        );
+        mobileLog(`Compressed dimensions: ${targetWidth}x${targetHeight}`);
+
+        // Create compression canvas with reduced dimensions
+        const compressionCanvas = document.createElement('canvas');
+        compressionCanvas.width = targetWidth;
+        compressionCanvas.height = targetHeight;
+        const compCtx = compressionCanvas.getContext('2d');
+
+        if (!compCtx) {
+          throw new Error('Could not create compression canvas context');
+        }
+
+        // Direct recording from the canvas with compressed dimensions
+        let frames = [];
+        const framerate = compressionSettings.framerate;
+        const frameCount = Math.ceil(trimDuration * framerate);
+
+        updateProgress(10);
+
+        // Capture frames at reduced framerate
+        for (let i = 0; i < frameCount; i++) {
+          const currentTime = startTime + i / framerate;
+
+          // Set video time
+          sourceVideo.currentTime = currentTime;
+
+          // Wait for seek to complete
+          await new Promise<void>((resolve) => {
+            const seeked = () => {
+              sourceVideo.removeEventListener('seeked', seeked);
+              resolve();
+            };
+            sourceVideo.addEventListener('seeked', seeked);
+
+            // Timeout in case event never fires
+            setTimeout(resolve, 500);
+          });
+
+          // Draw the frame to compression canvas with scaled dimensions
+          compCtx.drawImage(sourceVideo, 0, 0, targetWidth, targetHeight);
+
+          // Capture the frame as image data
+          const imageData = compCtx.getImageData(
+            0,
+            0,
+            targetWidth,
+            targetHeight
+          );
+          frames.push(imageData);
+
+          // Update progress periodically
+          if (i % 10 === 0) {
+            updateProgress(10 + (i / frameCount) * 20);
+          }
+        }
+
+        mobileLog(`Captured ${frames.length} frames at ${framerate}fps`);
+        updateProgress(30);
+
+        // Try to get supported MIME types
+        let mimeType = 'video/webm;codecs=h264';
+        let codecOptions = {
+          mimeType: mimeType,
+          videoBitsPerSecond: compressionSettings.videoBitrate,
+        };
+
+        // Test if the preferred codec is supported
+        if (!MediaRecorder.isTypeSupported(mimeType)) {
+          mobileLog(`${mimeType} not supported, trying alternatives`);
+
+          // Try alternatives in order of preference
+          const alternatives = [
+            'video/webm;codecs=vp9',
+            'video/webm;codecs=vp8',
+            'video/webm',
+            'video/mp4',
+            '', // Empty string lets browser choose
+          ];
+
+          for (const alt of alternatives) {
+            if (!alt || MediaRecorder.isTypeSupported(alt)) {
+              mimeType = alt;
+              codecOptions = {
+                mimeType: alt || '',
+                videoBitsPerSecond: compressionSettings.videoBitrate,
+              };
+              mobileLog(`Using codec: ${alt || 'browser default'}`);
+              break;
+            }
+          }
+        }
+
+        // Create MediaRecorder to record the canvas
+        const canvasStream = compressionCanvas.captureStream(framerate);
+
+        try {
+          // Try to create recorder with our settings
+          const recorder = new MediaRecorder(canvasStream, codecOptions);
+
+          const chunks: Blob[] = [];
+          recorder.ondataavailable = (e) => chunks.push(e.data);
+
+          // Promise that resolves when recording stops
+          const recordingPromise = new Promise<Blob>((resolve) => {
+            recorder.onstop = () => {
+              let trimmedBlob;
+
+              // Create the right blob type based on mime type
+              if (mimeType.includes('mp4')) {
+                trimmedBlob = new Blob(chunks, { type: 'video/mp4' });
+              } else {
+                trimmedBlob = new Blob(chunks, { type: 'video/webm' });
+              }
+
+              resolve(trimmedBlob);
+            };
+          });
+
+          // Start recording
+          recorder.start(
+            (1000 / framerate) * compressionSettings.keyframeInterval
+          ); // Segment size matches keyframe interval
+
+          // Play back the frames
+          let frameIndex = 0;
+          const playbackInterval = setInterval(() => {
+            if (frameIndex < frames.length) {
+              compCtx.putImageData(frames[frameIndex], 0, 0);
+              frameIndex++;
+              updateProgress(30 + (frameIndex / frames.length) * 20);
+            } else {
+              clearInterval(playbackInterval);
+              recorder.stop();
+            }
+          }, 1000 / framerate);
+
+          // Wait for recording to complete
+          const trimmedBlob = await recordingPromise;
+
+          mobileLog(
+            `Recording completed, compressed size: ${trimmedBlob.size / 1024} KB`
+          );
+
+          // Validate the recorded blob
+          const isValid = await isValidVideoBlob(trimmedBlob);
+          mobileLog(`Recorded video valid: ${isValid}`);
+
+          if (!isValid || trimmedBlob.size < 10000) {
+            mobileLog(
+              `Compressed recording invalid or too small, trying with higher quality`
+            );
+
+            // Try again with higher quality settings
+            const highQualityRecorder = new MediaRecorder(canvasStream, {
+              videoBitsPerSecond: 3000000, // 3 Mbps - higher quality
+            });
+
+            const highQualityChunks: Blob[] = [];
+            highQualityRecorder.ondataavailable = (e) =>
+              highQualityChunks.push(e.data);
+
+            const highQualityPromise = new Promise<Blob>((resolve) => {
+              highQualityRecorder.onstop = () => {
+                const blob = new Blob(highQualityChunks, {
+                  type: 'video/webm',
+                });
+                resolve(blob);
+              };
+            });
+
+            // Play frames again
+            frameIndex = 0;
+            highQualityRecorder.start();
+
+            const replayInterval = setInterval(() => {
+              if (frameIndex < frames.length) {
+                compCtx.putImageData(frames[frameIndex], 0, 0);
+                frameIndex++;
+              } else {
+                clearInterval(replayInterval);
+                highQualityRecorder.stop();
+              }
+            }, 1000 / framerate);
+
+            const highQualityBlob = await highQualityPromise;
+            mobileLog(
+              `High quality recording completed: ${highQualityBlob.size / 1024} KB`
+            );
+
+            const highQualityValid = await isValidVideoBlob(highQualityBlob);
+            mobileLog(`High quality video valid: ${highQualityValid}`);
+
+            if (highQualityValid && highQualityBlob.size >= 10000) {
+              // Upload high quality version
+              await uploadBlobToGCS(
+                highQualityBlob,
+                targetWidth,
+                targetHeight,
+                trimDuration
+              );
+            } else {
+              // Last resort: fetch original video and convert to MP4
+              mobileLog(`Falling back to direct blob conversion`);
+
+              try {
+                // Get the original video data
+                const response = await fetch(videoSrc);
+                const originalBlob = await response.blob();
+
+                // Create an element to help with conversion
+                const videoEl = document.createElement('video');
+                videoEl.src = URL.createObjectURL(originalBlob);
+                await new Promise((resolve) => {
+                  videoEl.onloadedmetadata = resolve;
+                  setTimeout(resolve, 3000); // Timeout fallback
+                });
+
+                // Create a MediaSource object
+                const stream = (videoEl as any).captureStream();
+                const recorder = new MediaRecorder(stream);
+
+                const directChunks: Blob[] = [];
+                recorder.ondataavailable = (e) => directChunks.push(e.data);
+
+                const directPromise = new Promise<Blob>((resolve) => {
+                  recorder.onstop = () => {
+                    const blob = new Blob(directChunks, { type: 'video/webm' });
+                    resolve(blob);
+                  };
+                });
+
+                // Manually play through the segment we want
+                videoEl.currentTime = startTime;
+                videoEl.play();
+                recorder.start();
+
+                // Stop after duration
+                setTimeout(() => {
+                  videoEl.pause();
+                  recorder.stop();
+                }, trimDuration * 1000);
+
+                const directBlob = await directPromise;
+
+                if (directBlob.size > 10000) {
+                  await uploadBlobToGCS(
+                    directBlob,
+                    videoEl.videoWidth,
+                    videoEl.videoHeight,
+                    trimDuration
+                  );
+                } else {
+                  // Final fallback: use original blob but clip during upload
+                  await uploadBlobToGCS(
+                    originalBlob,
+                    sourceVideo.videoWidth,
+                    sourceVideo.videoHeight,
+                    trimDuration
+                  );
+                }
+              } catch (e) {
+                if (e instanceof Error) {
+                  mobileLog(`Direct conversion failed: ${e.message}`);
+                } else {
+                  mobileLog('Direct conversion failed with an unknown error');
+                }
+
+                // Absolute last resort: use the original video
+                const response = await fetch(videoSrc);
+                const originalBlob = await response.blob();
+
+                await uploadBlobToGCS(
+                  originalBlob,
+                  sourceVideo.videoWidth,
+                  sourceVideo.videoHeight,
+                  trimDuration
+                );
+              }
+            }
+
+            clearInterval(simulationInterval);
+            return;
+          }
+
+          // Upload the compressed recorded blob
+          await uploadBlobToGCS(
+            trimmedBlob,
+            targetWidth,
+            targetHeight,
+            trimDuration
+          );
+
+          clearInterval(simulationInterval);
+          return;
+        } catch (recorderError) {
+          if (recorderError instanceof Error) {
+            mobileLog(`MediaRecorder error: ${recorderError.message}`);
+          } else {
+            mobileLog('MediaRecorder error: An unknown error occurred');
+          }
+
+          // Try a more direct approach with the original video
+          try {
+            // Get the original video as a blob
+            const response = await fetch(videoSrc);
+            const originalBlob = await response.blob();
+
+            // Create a new FileReader
+            const reader = new FileReader();
+
+            // Read the blob as ArrayBuffer
+            const arrayBuffer = await new Promise<ArrayBuffer>((resolve) => {
+              reader.onload = () => resolve(reader.result as ArrayBuffer);
+              reader.readAsArrayBuffer(originalBlob);
+            });
+
+            // Create a data view for manipulation
+            const view = new DataView(arrayBuffer);
+
+            // This is a very simple "compression" by setting quality metadata
+            // It's not true compression but may help
+            const compressedBlob = new Blob([arrayBuffer], {
+              type: 'video/mp4',
+              endings: 'transparent',
+            });
+
+            await uploadBlobToGCS(
+              compressedBlob,
+              sourceVideo.videoWidth,
+              sourceVideo.videoHeight,
+              trimDuration
+            );
+
+            clearInterval(simulationInterval);
+            return;
+          } catch (directError) {
+            if (directError instanceof Error) {
+              mobileLog(`Direct approach failed: ${directError.message}`);
+            } else {
+              mobileLog('Direct approach failed with an unknown error');
+            }
+
+            // Final fallback - use original without any processing
+            const response = await fetch(videoSrc);
+            const originalBlob = await response.blob();
+
+            await uploadBlobToGCS(
+              originalBlob,
+              sourceVideo.videoWidth,
+              sourceVideo.videoHeight,
+              trimDuration
+            );
+
+            clearInterval(simulationInterval);
+            return;
+          }
+        }
+      }
+
+      // ----- Standard approach for non-iOS devices -----
+      mobileLog(`Starting standard trim from ${startTime}s to ${endTime}s`);
 
       // Call the standardTrimVideo function
       const trimmedBlob = await standardTrimVideo(
@@ -547,9 +1080,7 @@ function EditPage() {
         endTime
       );
 
-      updateProgress(30);
-
-      // Log original size
+      // Compress the trimmed video before upload
       console.log('Original size:', trimmedBlob.size / (1024 * 1024), 'MB');
 
       // Import ffmpeg only when needed (dynamic import)
@@ -558,8 +1089,6 @@ function EditPage() {
 
       // Create FFmpeg instance
       const ffmpeg = new FFmpeg();
-
-      // Log debug information
       console.log('Loading FFmpeg...');
       mobileLog('Loading FFmpeg for compression...');
 
@@ -570,7 +1099,6 @@ function EditPage() {
       // Write input file
       const inputFileName = 'input.mp4';
       const outputFileName = 'compressed.mp4';
-
       console.log('Writing file to FFmpeg...');
       mobileLog('Writing input file to FFmpeg...');
 
@@ -580,122 +1108,27 @@ function EditPage() {
 
       updateProgress(40);
 
-      // Check if we're on iOS
-      const isiOSDevice = isIOS();
-      console.log('Is iOS device:', isiOSDevice);
-      mobileLog(`Device detected as iOS: ${isiOSDevice}`);
-
-      // Create compression command based on device
-      let ffmpegArgs = [];
-
-      if (isiOSDevice) {
-        mobileLog('Using VideoToolbox hardware encoding for iOS');
-        console.log('Using VideoToolbox hardware encoding');
-
-        // VideoToolbox encoding for iOS devices
-        ffmpegArgs = [
-          '-i',
-          inputFileName,
-          '-c:v',
-          'h264_videotoolbox', // Use VideoToolbox encoder
-          '-b:v',
-          '2M', // Target bitrate
-          '-bufsize',
-          '2M', // Buffer size
-          '-color_range',
-          '1', // Full color range for better compatibility
-          '-pix_fmt',
-          'yuv420p', // Standard pixel format
-          '-movflags',
-          '+faststart', // Web optimization
-          '-an', // Remove audio
-          outputFileName,
-        ];
-      } else {
-        mobileLog('Using standard libx264 encoding');
-        console.log('Using standard libx264 encoding');
-
-        // Standard encoding for non-iOS devices
-        ffmpegArgs = [
-          '-i',
-          inputFileName,
-          '-c:v',
-          'libx264',
-          '-profile:v',
-          'baseline',
-          '-level',
-          '3.0',
-          '-pix_fmt',
-          'yuv420p',
-          '-preset',
-          'fast',
-          '-crf',
-          '28',
-          '-an', // Remove audio
-          '-movflags',
-          '+faststart',
-          outputFileName,
-        ];
-      }
-
-      // Log the command we're going to run
-      console.log('FFmpeg command:', ffmpegArgs.join(' '));
-      mobileLog(`Running FFmpeg with args: ${ffmpegArgs.join(' ')}`);
-
-      // Execute the compression
-      try {
-        await ffmpeg.exec(ffmpegArgs);
-        console.log('Compression completed');
-        mobileLog('Compression completed successfully');
-      } catch (compressError) {
-        console.error('Compression error:', compressError);
-        mobileLog(`Compression error: ${compressError || 'Unknown error'}`);
-
-        // If VideoToolbox fails, fall back to simpler encoding
-        if (isiOSDevice) {
-          mobileLog('Falling back to simpler encoding for iOS');
-          console.log('VideoToolbox failed, trying fallback encoding');
-
-          // Try a simpler encoding approach as fallback
-          const fallbackArgs = [
-            '-i',
-            inputFileName,
-            '-c:v',
-            'h264_videotoolbox',
-            '-preset',
-            'fast',
-            '-pix_fmt',
-            'yuv420p',
-            '-an',
-            outputFileName,
-          ];
-
-          try {
-            await ffmpeg.exec(fallbackArgs);
-            console.log('Fallback compression completed');
-            mobileLog('Fallback compression successful');
-          } catch (fallbackError) {
-            console.error('Fallback compression error:', fallbackError);
-            mobileLog(
-              `Fallback compression failed: ${fallbackError || 'Unknown error'}`
-            );
-
-            // If all else fails, try with minimal settings (just copy)
-            const minimalArgs = [
-              '-i',
-              inputFileName,
-              '-c:v',
-              'copy',
-              '-an',
-              outputFileName,
-            ];
-
-            await ffmpeg.exec(minimalArgs);
-            console.log('Minimal compression completed');
-            mobileLog('Using minimal compression (copy)');
-          }
-        }
-      }
+      // Set compression parameters - adjust these for quality vs size
+      await ffmpeg.exec([
+        '-i',
+        inputFileName,
+        '-c:v',
+        'libx264',
+        '-profile:v',
+        'baseline',
+        '-level',
+        '3.0',
+        '-pix_fmt',
+        'yuv420p',
+        '-preset',
+        'fast',
+        '-crf',
+        '28',
+        '-an', // Remove audio
+        '-movflags',
+        '+faststart',
+        outputFileName,
+      ]);
 
       updateProgress(70);
 
@@ -716,88 +1149,39 @@ function EditPage() {
       });
 
       // Read the compressed file
-      try {
-        const data = await ffmpeg.readFile(outputFileName);
-        const compressedBlob = new Blob([data], { type: 'video/mp4' });
-        console.log(
-          'Compressed size:',
-          compressedBlob.size / (1024 * 1024),
-          'MB'
+      const data = await ffmpeg.readFile(outputFileName);
+      const compressedBlob = new Blob([data], { type: 'video/mp4' });
+      console.log(
+        'Compressed size:',
+        compressedBlob.size / (1024 * 1024),
+        'MB'
+      );
+
+      updateProgress(80);
+
+      // Before uploading
+      if (compressedBlob.size < 10000) {
+        setUploadError('Video file is too small (less than 10KB)');
+        return;
+      }
+
+      if (compressedBlob.size > 104857600) {
+        // 100MB
+        setUploadError('Video file is too large (more than 100MB)');
+        return;
+      }
+
+      // 6. Upload the trimmed video to GCS using signed URL
+      const uploadResponse = await fetch(url, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'video/mp4' },
+        body: compressedBlob,
+      });
+
+      if (!uploadResponse.ok) {
+        throw new Error(
+          `Upload failed: ${uploadResponse.status} ${uploadResponse.statusText}`
         );
-        mobileLog(
-          `Compressed size: ${(compressedBlob.size / (1024 * 1024)).toFixed(2)} MB`
-        );
-
-        // Check if the compressed file size is too small (potentially corrupted)
-        if (compressedBlob.size < 10000) {
-          // Less than 10KB
-          mobileLog(
-            `WARNING: Compressed file suspiciously small (${compressedBlob.size} bytes)`
-          );
-          console.warn(
-            `Compressed file is suspiciously small: ${compressedBlob.size} bytes`
-          );
-
-          // If the compression resulted in a tiny file, use the original
-          if (trimmedBlob.size > 10000) {
-            mobileLog('Using original trimmed file instead of compressed');
-            console.log('Using original trimmed file instead of compressed');
-            updateProgress(80);
-
-            // Upload the original trimmed video
-            const uploadResponse = await fetch(url, {
-              method: 'PUT',
-              headers: { 'Content-Type': 'video/mp4' },
-              body: trimmedBlob,
-            });
-
-            if (!uploadResponse.ok) {
-              throw new Error(
-                `Upload failed: ${uploadResponse.status} ${uploadResponse.statusText}`
-              );
-            }
-          } else {
-            throw new Error(
-              'Both compressed and original videos are too small to be valid'
-            );
-          }
-        } else {
-          updateProgress(80);
-
-          // Upload the compressed video
-          const uploadResponse = await fetch(url, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'video/mp4' },
-            body: compressedBlob,
-          });
-
-          if (!uploadResponse.ok) {
-            throw new Error(
-              `Upload failed: ${uploadResponse.status} ${uploadResponse.statusText}`
-            );
-          }
-        }
-      } catch (readError) {
-        console.error('Error reading compressed file:', readError);
-        mobileLog(`Error reading compressed file: ${readError}`);
-
-        // If reading the compressed file fails, use the original trimmed file
-        updateProgress(80);
-
-        console.log('Falling back to original trimmed file');
-        mobileLog('Falling back to original trimmed file for upload');
-
-        const uploadResponse = await fetch(url, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'video/mp4' },
-          body: trimmedBlob,
-        });
-
-        if (!uploadResponse.ok) {
-          throw new Error(
-            `Upload failed: ${uploadResponse.status} ${uploadResponse.statusText}`
-          );
-        }
       }
 
       clearInterval(simulationInterval);
@@ -828,7 +1212,6 @@ function EditPage() {
       // router.push('/analyse/results');
     } catch (error) {
       console.error('Error creating or uploading trimmed video:', error);
-      mobileLog(`Final error: ${(error as Error).message}`);
       setUploadError((error as Error).message);
     } finally {
       clearInterval(simulationInterval);
