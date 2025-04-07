@@ -358,96 +358,115 @@ export async function standardTrimVideo(
   canvas: HTMLCanvasElement,
   ctx: CanvasRenderingContext2D,
   startTime: number,
-  endTime: number
+  endTime: number,
+  mobileLog?: (message: string) => void // Added mobileLog parameter
 ): Promise<Blob> {
-  console.log('Using standard trim approach');
+  const log = (message: string) => {
+    console.log(message);
+    if (mobileLog) mobileLog(message);
+  };
 
-  // FIXED: Improved detection that won't incorrectly match desktop browsers
-  const isIOS =
-    /iPad|iPhone|iPod/.test(navigator.userAgent) &&
-    !(window as any).MSStream &&
-    !(/Mac/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
+  log('Using standard trim approach');
 
-  const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
-  const isIOSSafari = isIOS && isSafari;
+  // FIXED: Strict browser detection using window.navigator properties
+  const ua = window.navigator.userAgent.toLowerCase();
 
-  if (isIOSSafari) {
-    console.log('iOS Safari detected, using compatibility mode');
+  // Explicit check for desktop browsers first
+  const isChrome = ua.indexOf('chrome') > -1 && ua.indexOf('safari') > -1;
+  const isFirefox = ua.indexOf('firefox') > -1;
+  const isDesktopSafari =
+    ua.indexOf('safari') > -1 &&
+    ua.indexOf('mac') > -1 &&
+    !isChrome &&
+    !isFirefox;
+
+  // Then detect iOS specifically
+  const isIOSDevice = /iphone|ipad|ipod/.test(ua);
+  const isIOSSafari = isIOSDevice && ua.indexOf('safari') > -1;
+
+  if (isChrome) {
+    log('Chrome browser detected');
+  } else if (isFirefox) {
+    log('Firefox browser detected');
+  } else if (isDesktopSafari) {
+    log('Desktop Safari detected');
+  } else if (isIOSSafari) {
+    log('iOS Safari detected, using compatibility mode');
   } else {
-    console.log('Using standard browser mode');
+    log('Other browser detected, using standard mode');
   }
 
-  // Get high quality MIME type
+  // MIME type selection
   let mimeType = 'video/webm';
 
-  // Try standard formats in order of preference
   if (MediaRecorder.isTypeSupported('video/webm;codecs=h264')) {
-    console.log('High-quality MIME type supported: video/webm;codecs=h264');
+    log('High-quality MIME type supported: video/webm;codecs=h264');
     mimeType = 'video/webm;codecs=h264';
   } else if (MediaRecorder.isTypeSupported('video/webm')) {
-    console.log('Basic MIME type supported: video/webm');
+    log('Basic MIME type supported: video/webm');
     mimeType = 'video/webm';
   } else if (MediaRecorder.isTypeSupported('video/mp4')) {
-    console.log('High-quality MIME type supported: video/mp4');
+    log('High-quality MIME type supported: video/mp4');
     mimeType = 'video/mp4';
   }
 
-  // Special handling for iOS - always prefer MP4
+  // iOS Safari should use MP4 if available
   if (isIOSSafari && MediaRecorder.isTypeSupported('video/mp4')) {
     mimeType = 'video/mp4';
-    console.log('Using MP4 for iOS Safari');
+    log('Using MP4 for iOS Safari');
   }
 
-  // IMPORTANT: Always ensure canvas dimensions match video
+  // Set canvas dimensions
   const videoWidth = sourceVideo.videoWidth || 640;
   const videoHeight = sourceVideo.videoHeight || 480;
   canvas.width = videoWidth;
   canvas.height = videoHeight;
-  console.log(`Canvas dimensions set to ${canvas.width}x${canvas.height}`);
+  log(`Canvas dimensions set to ${canvas.width}x${canvas.height}`);
 
-  // Now choose the appropriate method for the browser
+  // Choose appropriate method based on browser detection
   if (isIOSSafari) {
-    // For iOS Safari, use a completely different approach with direct frame capture
-    return await captureDirectFramesIOS(
+    return await iOSTrimVideo(
       sourceVideo,
       canvas,
       ctx,
       startTime,
       endTime,
-      mimeType
+      mimeType,
+      log
     );
   } else {
-    // For other browsers, use the standard approach
-    return await captureStandardBrowser(
+    return await standardBrowserTrim(
       sourceVideo,
       canvas,
       ctx,
       startTime,
       endTime,
-      mimeType
+      mimeType,
+      log
     );
   }
 }
 
-// Standard approach for desktop browsers
-async function captureStandardBrowser(
+// Standard method for desktop browsers
+async function standardBrowserTrim(
   sourceVideo: HTMLVideoElement,
   canvas: HTMLCanvasElement,
   ctx: CanvasRenderingContext2D,
   startTime: number,
   endTime: number,
-  mimeType: string
+  mimeType: string,
+  log: (message: string) => void
 ): Promise<Blob> {
-  console.log('Using standard browser capture method');
+  log('Using standard browser trimming approach');
 
   // Create a stream from the canvas
   // @ts-ignore
-  const canvasStream = canvas.captureStream(60);
+  const canvasStream = canvas.captureStream(30); // Lower to 30fps to match original video
 
-  // Set up high quality MediaRecorder
+  // Set up MediaRecorder
   const mediaRecorder = new MediaRecorder(canvasStream, {
     mimeType: mimeType,
-    videoBitsPerSecond: 8000000, // High quality for desktop
+    videoBitsPerSecond: 5000000, // More reasonable bitrate
   });
 
   const chunks: Blob[] = [];
@@ -461,8 +480,8 @@ async function captureStandardBrowser(
       }
     };
 
-    mediaRecorder.onstop = (event: Event) => {
-      console.log(`MediaRecorder stopped, processed ${frameCount} frames`);
+    mediaRecorder.onstop = () => {
+      log(`MediaRecorder stopped, processed ${frameCount} frames`);
 
       try {
         if (chunks.length === 0) {
@@ -470,23 +489,23 @@ async function captureStandardBrowser(
         }
 
         const trimmedBlob = new Blob(chunks, { type: mimeType });
-        console.log(`Created trimmed blob: ${trimmedBlob.size} bytes`);
+        log(`Created trimmed blob: ${trimmedBlob.size} bytes`);
 
         resolve(trimmedBlob);
       } catch (error) {
-        console.error('Error creating final video:', error);
+        log(`Error creating final video: ${error}`);
         reject(error);
       }
     };
 
     // Start the MediaRecorder
-    mediaRecorder.start(50);
+    mediaRecorder.start(100);
 
     // Function to draw frames
     const captureFrames = () => {
-      // Stop when we reach the end time with a small buffer
-      if (sourceVideo.currentTime >= endTime + 0.2) {
-        console.log(`Reached end time (${endTime}s), stopping recorder`);
+      // Stop when we reach the end time
+      if (sourceVideo.currentTime >= endTime) {
+        log(`Reached end time (${endTime}s), stopping recorder`);
         mediaRecorder.stop();
         sourceVideo.pause();
         return;
@@ -497,12 +516,12 @@ async function captureStandardBrowser(
         ctx.drawImage(sourceVideo, 0, 0, canvas.width, canvas.height);
         frameCount++;
       } catch (e) {
-        console.error('Error drawing frame:', e);
+        log(`Error drawing frame: ${e}`);
       }
 
       // Log progress occasionally
       if (frameCount % 30 === 0) {
-        console.log(
+        log(
           `Processed ${frameCount} frames, current time: ${sourceVideo.currentTime.toFixed(2)}s`
         );
       }
@@ -511,182 +530,216 @@ async function captureStandardBrowser(
       requestAnimationFrame(captureFrames);
     };
 
-    // Start the process by seeking to slightly before start time
-    const seekTime = Math.max(0, startTime - 0.1);
-    console.log('Seeking to start time with buffer:', seekTime);
-    sourceVideo.currentTime = seekTime;
+    // Seek to start time
+    log(`Seeking to start time: ${startTime}`);
+    sourceVideo.currentTime = startTime;
 
     // Once seeked, start playing and capturing frames
     sourceVideo.onseeked = () => {
-      console.log('Seeked to start time, starting playback');
+      log('Video seeked to start time, beginning playback');
 
-      // Slow down playback for more precise frame capture
-      sourceVideo.playbackRate = 0.8;
+      // IMPORTANT: Use normal playback speed to avoid speeding up
+      sourceVideo.playbackRate = 1.0;
 
       sourceVideo
         .play()
         .then(() => {
-          console.log('Playback started for frame capture');
+          log('Playback started for frame capture');
           requestAnimationFrame(captureFrames);
         })
         .catch((err) => {
-          console.error('Error playing video for frame capture:', err);
+          log(`Error playing video: ${err}`);
           reject(new Error('Failed to play video for frame capture'));
         });
     };
 
-    // Set a safety timeout
+    // Safety timeout
     const safetyTimeout = setTimeout(() => {
       if (mediaRecorder.state !== 'inactive') {
-        console.warn('Trim operation taking too long, forcing completion');
+        log('Trim operation taking too long, forcing completion');
         mediaRecorder.stop();
       }
     }, 30000);
 
-    // Override onstop to clean up timeout
+    // Clean up timeout
     const originalOnStop = mediaRecorder.onstop;
     mediaRecorder.onstop = (event: Event) => {
       clearTimeout(safetyTimeout);
-      originalOnStop.call(mediaRecorder, event);
+      if (originalOnStop) {
+        try {
+          originalOnStop.call(mediaRecorder, event);
+        } catch (e) {
+          log(`Error in original onstop handler: ${e}`);
+        }
+      }
     };
   });
 }
 
-// NEW METHOD: Direct frame capture for iOS - completely different approach
-async function captureDirectFramesIOS(
+// Simplified iOS method that focuses on reliable capture
+async function iOSTrimVideo(
   sourceVideo: HTMLVideoElement,
   canvas: HTMLCanvasElement,
   ctx: CanvasRenderingContext2D,
   startTime: number,
   endTime: number,
-  mimeType: string
+  mimeType: string,
+  log: (message: string) => void
 ): Promise<Blob> {
-  console.log('Using direct frame capture for iOS Safari');
+  log('Using simplified iOS frame capture');
 
-  // Pause the video to ensure we have full control
-  sourceVideo.pause();
+  // Create temporary video element
+  const tempVideo = document.createElement('video');
+  tempVideo.style.display = 'none';
+  tempVideo.muted = true;
+  tempVideo.playsInline = true;
+  tempVideo.crossOrigin = 'anonymous';
+  tempVideo.src = sourceVideo.src;
+  document.body.appendChild(tempVideo);
 
-  // Create a new hidden video element for the source
-  // This is important as we need a dedicated element for frame extraction
-  // that won't have any UI controls or playback issues
-  const extractionVideo = document.createElement('video');
-  extractionVideo.style.position = 'absolute';
-  extractionVideo.style.left = '-9999px';
-  extractionVideo.style.top = '-9999px';
-  document.body.appendChild(extractionVideo);
-
-  // Configure the extraction video
-  extractionVideo.crossOrigin = 'anonymous';
-  extractionVideo.muted = true;
-  extractionVideo.autoplay = false;
-  extractionVideo.playsInline = true;
-
-  // Create a temporary object URL that we can use for the extraction video
-  const sourceVideoUrl = sourceVideo.src;
-  console.log(
-    `Setting up extraction from source: ${sourceVideo.src.substring(0, 50)}...`
+  log(
+    `Created temporary video with source: ${tempVideo.src.substring(0, 30)}...`
   );
 
-  // Set the source of the extraction video
-  extractionVideo.src = sourceVideoUrl;
-
-  // Wait for metadata to load
-  await new Promise<void>((resolve, reject) => {
-    extractionVideo.onloadedmetadata = () => resolve();
-    extractionVideo.onerror = (e) =>
-      reject(new Error(`Video load error: ${e}`));
+  // Wait for temp video to load
+  await new Promise<void>((resolve) => {
+    tempVideo.onloadeddata = () => {
+      log('Temporary video data loaded');
+      resolve();
+    };
 
     // Safety timeout
-    setTimeout(() => resolve(), 3000);
+    setTimeout(() => {
+      log('Timeout waiting for video load, proceeding anyway');
+      resolve();
+    }, 3000);
   });
 
-  console.log('Extraction video loaded, starting frame capture');
-
-  // Calculate number of frames needed
-  const fps = 15; // Lower fps for iOS
+  // Calculate duration and frames needed
   const duration = endTime - startTime;
-  const totalFrames = Math.ceil(duration * fps);
-
-  console.log(
-    `Will capture ${totalFrames} frames over ${duration.toFixed(2)} seconds`
+  const frameRate = 15; // Lower framerate for iOS
+  const totalFrames = Math.ceil(frameRate * duration);
+  log(
+    `Will capture ${totalFrames} frames for ${duration.toFixed(2)}s duration`
   );
 
-  // Prepare an array to store our frames as blobs
-  const frameBlobs: Blob[] = [];
+  // Store all captured frame data
+  const frames: { blob: Blob; time: number }[] = [];
 
-  // Capture each frame individually
+  // Get frames one by one
   for (let i = 0; i < totalFrames; i++) {
-    const frameTime = startTime + i / fps;
-
-    // Set the video to this specific time
-    extractionVideo.currentTime = frameTime;
-
-    // Wait for the video to seek to this time
-    await new Promise<void>((resolve) => {
-      const seekHandler = () => {
-        extractionVideo.removeEventListener('seeked', seekHandler);
-        resolve();
-      };
-
-      extractionVideo.addEventListener('seeked', seekHandler);
-
-      // Safety timeout in case the event doesn't fire
-      setTimeout(resolve, 1000);
-    });
-
-    // Clear the canvas and draw the current frame
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const frameTime = startTime + i / frameRate;
 
     try {
-      // CRITICAL FIX: Force opacity to ensure frames aren't black
-      ctx.globalAlpha = 0.99;
-      ctx.drawImage(extractionVideo, 0, 0, canvas.width, canvas.height);
+      // Set video to exact frame time
+      tempVideo.currentTime = frameTime;
+
+      // Wait for video to seek
+      await new Promise<void>((resolve) => {
+        const seekHandler = () => {
+          tempVideo.removeEventListener('seeked', seekHandler);
+          resolve();
+        };
+
+        tempVideo.addEventListener('seeked', seekHandler);
+
+        // Safety timeout
+        setTimeout(() => {
+          tempVideo.removeEventListener('seeked', seekHandler);
+          log(`Seek timeout for frame ${i}, continuing anyway`);
+          resolve();
+        }, 500);
+      });
+
+      // Clear canvas
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      // IMPORTANT: Draw with opacity trick to avoid black frames
+      ctx.globalAlpha = 0.999;
+      ctx.drawImage(tempVideo, 0, 0, canvas.width, canvas.height);
       ctx.globalAlpha = 1.0;
 
-      // Get this frame as a blob
+      // Capture frame as JPEG
       const frameBlob = await new Promise<Blob>((resolve) => {
         canvas.toBlob(
           (blob) => {
-            resolve(blob!);
+            if (blob) {
+              resolve(blob);
+            } else {
+              // Create empty fallback blob if toBlob fails
+              resolve(new Blob([], { type: 'image/jpeg' }));
+            }
           },
           'image/jpeg',
-          0.9
+          0.8
         );
       });
 
-      frameBlobs.push(frameBlob);
+      frames.push({ blob: frameBlob, time: frameTime });
 
-      if (i % 5 === 0) {
-        console.log(
-          `Captured iOS frame ${i + 1}/${totalFrames} at time ${frameTime.toFixed(2)}s`
+      if (i % 5 === 0 || i === totalFrames - 1) {
+        log(
+          `Captured frame ${i + 1}/${totalFrames} at time ${frameTime.toFixed(2)}s (size: ${frameBlob.size} bytes)`
         );
       }
     } catch (e) {
-      console.error(`Error capturing frame ${i}:`, e);
+      log(`Error capturing frame ${i}: ${e}`);
     }
   }
 
-  console.log(`Finished capturing ${frameBlobs.length} frames`);
+  log(`Captured ${frames.length} frames, creating video...`);
 
-  // Create a new video from these frames using a separate canvas and stream
-  const recordingCanvas = document.createElement('canvas');
-  recordingCanvas.width = canvas.width;
-  recordingCanvas.height = canvas.height;
-  const recordingCtx = recordingCanvas.getContext('2d');
+  // Now create a video from these frames
+  const videoBlob = await createVideoFromFrames(
+    frames,
+    canvas.width,
+    canvas.height,
+    mimeType,
+    log
+  );
 
-  if (!recordingCtx) {
+  // Clean up
+  try {
+    document.body.removeChild(tempVideo);
+  } catch (e) {
+    log(`Error removing temp video: ${e}`);
+  }
+
+  return videoBlob;
+}
+
+// Helper function to create a video from captured frames
+async function createVideoFromFrames(
+  frames: { blob: Blob; time: number }[],
+  width: number,
+  height: number,
+  mimeType: string,
+  log: (message: string) => void
+): Promise<Blob> {
+  log(`Creating video from ${frames.length} frames`);
+
+  // Create a new canvas for recording
+  const recordCanvas = document.createElement('canvas');
+  recordCanvas.width = width;
+  recordCanvas.height = height;
+  const recordCtx = recordCanvas.getContext('2d');
+
+  if (!recordCtx) {
     throw new Error('Could not get recording canvas context');
   }
 
-  // Set up a stream and recorder
+  // Create a stream from this canvas
   // @ts-ignore
-  const stream = recordingCanvas.captureStream(30);
+  const stream = recordCanvas.captureStream(30);
+
+  // Setup MediaRecorder with lower bitrate for iOS compatibility
   const recorder = new MediaRecorder(stream, {
-    mimeType,
+    mimeType: mimeType,
     videoBitsPerSecond: 2000000,
   });
 
   const chunks: Blob[] = [];
+
   recorder.ondataavailable = (e) => {
     if (e.data.size > 0) {
       chunks.push(e.data);
@@ -695,76 +748,87 @@ async function captureDirectFramesIOS(
 
   // Start recording
   recorder.start(200);
+  log('MediaRecorder started for frame playback');
 
-  // Now play back all our captured frames at the right rate
+  // Function to play back frames sequentially
   let frameIndex = 0;
-  const frameInterval = 1000 / 30; // 30fps playback
 
-  const playNextFrame = () => {
-    if (frameIndex >= frameBlobs.length) {
+  const playNextFrame = async () => {
+    if (frameIndex >= frames.length) {
       // All frames played, stop recording
+      log('All frames played back, stopping recorder');
       recorder.stop();
       return;
     }
 
-    // Create an image from the blob
-    const img = new Image();
-    const url = URL.createObjectURL(frameBlobs[frameIndex]);
+    const frame = frames[frameIndex];
 
-    img.onload = () => {
-      // Clear and draw the image
-      recordingCtx.clearRect(
-        0,
-        0,
-        recordingCanvas.width,
-        recordingCanvas.height
-      );
-      recordingCtx.drawImage(
-        img,
-        0,
-        0,
-        recordingCanvas.width,
-        recordingCanvas.height
-      );
+    try {
+      // Create image from blob
+      const img = new Image();
+      const url = URL.createObjectURL(frame.blob);
 
-      // Release the URL
-      URL.revokeObjectURL(url);
+      // Wait for image to load
+      await new Promise<void>((resolve) => {
+        img.onload = () => {
+          // Clear canvas and draw frame
+          recordCtx.clearRect(0, 0, width, height);
+          recordCtx.globalAlpha = 0.999; // Trick to force rendering
+          recordCtx.drawImage(img, 0, 0, width, height);
+          recordCtx.globalAlpha = 1.0;
+
+          // Log occasionally
+          if (frameIndex % 15 === 0) {
+            log(`Playing back frame ${frameIndex + 1}/${frames.length}`);
+          }
+
+          // Clean up
+          URL.revokeObjectURL(url);
+          resolve();
+        };
+
+        img.onerror = () => {
+          log(`Error loading frame ${frameIndex} image`);
+          URL.revokeObjectURL(url);
+          resolve();
+        };
+
+        img.src = url;
+      });
 
       // Schedule next frame
       frameIndex++;
-      setTimeout(playNextFrame, frameInterval);
-    };
-
-    img.src = url;
+      setTimeout(playNextFrame, 1000 / 30);
+    } catch (e) {
+      log(`Error in frame playback: ${e}`);
+      frameIndex++;
+      setTimeout(playNextFrame, 1000 / 30);
+    }
   };
 
   // Start playing frames
   playNextFrame();
 
-  // Clean up the extraction video
-  setTimeout(() => {
-    try {
-      document.body.removeChild(extractionVideo);
-    } catch (e) {
-      console.warn('Could not remove extraction video:', e);
-    }
-  }, 5000);
-
-  // Return a promise that resolves when recording is done
+  // Return promise that resolves when recording is done
   return new Promise<Blob>((resolve, reject) => {
     recorder.onstop = () => {
       try {
-        const finalBlob = new Blob(chunks, { type: mimeType });
-        console.log(`Created iOS video from frames: ${finalBlob.size} bytes`);
-
-        if (finalBlob.size < 5000) {
-          reject(
-            new Error('Generated video is too small, capture likely failed')
-          );
-        } else {
-          resolve(finalBlob);
+        if (chunks.length === 0) {
+          log('No data captured in final recording');
+          reject(new Error('No data captured during recording'));
+          return;
         }
+
+        const videoBlob = new Blob(chunks, { type: mimeType });
+        log(`Created final video: ${videoBlob.size} bytes`);
+
+        if (videoBlob.size < 5000) {
+          log('WARNING: Very small video created, may be invalid');
+        }
+
+        resolve(videoBlob);
       } catch (e) {
+        log(`Error creating final video: ${e}`);
         reject(e);
       }
     };
@@ -772,6 +836,7 @@ async function captureDirectFramesIOS(
     // Safety timeout
     setTimeout(() => {
       if (recorder.state === 'recording') {
+        log('Recording timeout reached, forcing stop');
         recorder.stop();
       }
     }, 30000);

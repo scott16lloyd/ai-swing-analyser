@@ -520,6 +520,7 @@ function EditPage() {
 
       // 3. Perform the trimming operation
       console.log(`Starting trim operation from ${startTime}s to ${endTime}s`);
+      mobileLog(`Starting trim operation from ${startTime}s to ${endTime}s`);
 
       // Progress update during trimming
       const trimDuration = endTime - startTime;
@@ -537,13 +538,15 @@ function EditPage() {
         canvas,
         ctx,
         startTime,
-        endTime
+        endTime,
+        mobileLog
       );
 
       updateProgress(30);
 
       // Compress the trimmed video before upload
       console.log('Original size:', trimmedBlob.size / (1024 * 1024), 'MB');
+      mobileLog(`Original size: ${trimmedBlob.size / (1024 * 1024)} MB`);
 
       // Import ffmpeg only when needed (dynamic import)
       const { FFmpeg } = await import('@ffmpeg/ffmpeg');
@@ -602,6 +605,7 @@ function EditPage() {
         compressedBlob.size / (1024 * 1024),
         'MB'
       );
+      mobileLog(`Compressed size: ${compressedBlob.size / (1024 * 1024)} MB`);
 
       updateProgress(80);
 
@@ -646,6 +650,7 @@ function EditPage() {
       // router.push('/analyse/results');
     } catch (error) {
       console.error('Error creating or uploading trimmed video:', error);
+      mobileLog(`Error: ${(error as Error).message}`);
       setUploadError((error as Error).message);
     } finally {
       clearInterval(simulationInterval);
