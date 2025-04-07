@@ -362,18 +362,33 @@ export async function standardTrimVideo(
 ): Promise<Blob> {
   console.log('Using standard trim approach');
 
+  // iOS Safari detection
+  const isIOS =
+    /iPad|iPhone|iPod/.test(navigator.userAgent) && !(window as any).MSStream;
+  const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+  const isIOSSafari = isIOS && isSafari;
+
+  if (isIOSSafari) {
+    console.log('iOS Safari detected, using compatibility mode');
+  }
+
   // Get high quality MIME type
   const mimeType = getHighQualityMimeType();
 
-  // Create a stream from the canvas
-  // @ts-ignore
-  // INCREASED FPS for better capture
-  const canvasStream = canvas.captureStream(60); // Increased to 60 FPS
+  // IMPORTANT: Explicitly set canvas dimensions to match video
+  // This is crucial for iOS Safari
+  canvas.width = sourceVideo.videoWidth || 640;
+  canvas.height = sourceVideo.videoHeight || 480;
+  console.log(`Canvas dimensions set to ${canvas.width}x${canvas.height}`);
 
-  // Set up high quality MediaRecorder
+  // Create a stream from the canvas - use lower FPS on iOS
+  // @ts-ignore
+  const canvasStream = canvas.captureStream(isIOSSafari ? 30 : 60);
+
+  // Set up MediaRecorder with iOS optimizations
   const mediaRecorder = new MediaRecorder(canvasStream, {
     mimeType: mimeType,
-    videoBitsPerSecond: 8000000, // Increased to 8Mbps for high quality
+    videoBitsPerSecond: isIOSSafari ? 2000000 : 8000000, // Lower bitrate for iOS
   });
 
   const chunks: Blob[] = [];
@@ -406,20 +421,31 @@ export async function standardTrimVideo(
     };
 
     // Start the MediaRecorder with more frequent chunks
-    mediaRecorder.start(50); // More frequent chunks for better quality
+    mediaRecorder.start(isIOSSafari ? 100 : 50); // Less frequent chunks for iOS
 
-    // Function to draw frames
+    // Function to draw frames with Safari optimizations
     const captureFrames = () => {
-      // Stop when we reach the end time with a small buffer to ensure we don't cut off too early
-      if (sourceVideo.currentTime >= endTime + 0.2) {
+      // Stop when we reach the end time
+      if (sourceVideo.currentTime >= endTime) {
         console.log(`Reached end time (${endTime}s), stopping recorder`);
-        mediaRecorder.stop();
         sourceVideo.pause();
+
+        // iOS Safari needs a short delay before stopping to ensure data is processed
+        if (isIOSSafari) {
+          setTimeout(() => mediaRecorder.stop(), 500);
+        } else {
+          mediaRecorder.stop();
+        }
         return;
       }
 
       // Draw frame to canvas
       try {
+        // For iOS Safari, clear the canvas first (important)
+        if (isIOSSafari) {
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+        }
+
         ctx.drawImage(sourceVideo, 0, 0, canvas.width, canvas.height);
         frameCount++;
       } catch (e) {
@@ -437,17 +463,16 @@ export async function standardTrimVideo(
       requestAnimationFrame(captureFrames);
     };
 
-    // Start the process by seeking to slightly before start time
-    const seekTime = Math.max(0, startTime - 0.1);
-    console.log('Seeking to start time with buffer:', seekTime);
-    sourceVideo.currentTime = seekTime;
+    // Start the process by seeking to start time exactly (no buffer for iOS)
+    console.log('Seeking to start time:', startTime);
+    sourceVideo.currentTime = startTime;
 
     // Once seeked, start playing and capturing frames
     sourceVideo.onseeked = () => {
       console.log('Seeked to start time, starting playback');
 
-      // Slow down playback for more precise frame capture
-      sourceVideo.playbackRate = 0.8;
+      // Slower playback for iOS
+      sourceVideo.playbackRate = isIOSSafari ? 0.5 : 0.8;
 
       sourceVideo
         .play()
@@ -462,12 +487,15 @@ export async function standardTrimVideo(
     };
 
     // Set a safety timeout
-    const safetyTimeout = setTimeout(() => {
-      if (mediaRecorder.state !== 'inactive') {
-        console.warn('Trim operation taking too long, forcing completion');
-        mediaRecorder.stop();
-      }
-    }, 30000); // 30-second safety timeout
+    const safetyTimeout = setTimeout(
+      () => {
+        if (mediaRecorder.state !== 'inactive') {
+          console.warn('Trim operation taking too long, forcing completion');
+          mediaRecorder.stop();
+        }
+      },
+      isIOSSafari ? 20000 : 30000
+    ); // Shorter timeout for iOS
 
     // Clean up the timeout when recording stops
     mediaRecorder.onstop = () => {
@@ -503,21 +531,33 @@ function isSafari(): boolean {
  * Get a high-quality MIME type that's supported by the browser
  */
 function getHighQualityMimeType(): string {
-  // Try high quality formats first
-  const types = [
-    'video/mp4;codecs=h264', // Most compatible high quality
-    'video/mp4',
-  ];
-
-  for (const type of types) {
-    if (MediaRecorder.isTypeSupported(type)) {
-      console.log(`High-quality MIME type supported: ${type}`);
-      return type;
+  // iOS Safari prefers MP4
+  if (
+    /iPad|iPhone|iPod/.test(navigator.userAgent) &&
+    !(window as any).MSStream &&
+    /^((?!chrome|android).)*safari/i.test(navigator.userAgent)
+  ) {
+    if (MediaRecorder.isTypeSupported('video/mp4')) {
+      console.log('High-quality MIME type supported: video/mp4');
+      return 'video/mp4';
     }
   }
 
-  console.warn('No ideal MIME types supported, falling back to default');
-  return 'video/mp4';
+  // Try standard formats in order of preference
+  if (MediaRecorder.isTypeSupported('video/webm;codecs=h264')) {
+    console.log('High-quality MIME type supported: video/webm;codecs=h264');
+    return 'video/webm;codecs=h264';
+  } else if (MediaRecorder.isTypeSupported('video/webm')) {
+    console.log('Basic MIME type supported: video/webm');
+    return 'video/webm';
+  } else if (MediaRecorder.isTypeSupported('video/mp4')) {
+    console.log('High-quality MIME type supported: video/mp4');
+    return 'video/mp4';
+  }
+
+  // Fallback
+  console.log('Falling back to video/webm');
+  return 'video/webm';
 }
 
 /**
