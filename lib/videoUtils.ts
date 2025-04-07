@@ -375,24 +375,30 @@ export async function standardTrimVideo(
   // Get high quality MIME type
   const mimeType = getHighQualityMimeType();
 
-  // IMPORTANT: Explicitly set canvas dimensions to match video
+  // Set canvas dimensions to match source video
   // This is crucial for iOS Safari
   canvas.width = sourceVideo.videoWidth || 640;
   canvas.height = sourceVideo.videoHeight || 480;
   console.log(`Canvas dimensions set to ${canvas.width}x${canvas.height}`);
 
-  // Create a stream from the canvas - use lower FPS on iOS
+  // Create a stream from the canvas
+  // Use lower FPS on iOS Safari to improve stability
+  const fps = isIOSSafari ? 30 : 60;
   // @ts-ignore
-  const canvasStream = canvas.captureStream(isIOSSafari ? 30 : 60);
+  const canvasStream = canvas.captureStream(fps);
 
-  // Set up MediaRecorder with iOS optimizations
+  // Lower bitrate on iOS for better compatibility
+  const bitrate = isIOSSafari ? 2000000 : 8000000;
+
+  // Set up high quality MediaRecorder
   const mediaRecorder = new MediaRecorder(canvasStream, {
     mimeType: mimeType,
-    videoBitsPerSecond: isIOSSafari ? 2000000 : 8000000, // Lower bitrate for iOS
+    videoBitsPerSecond: bitrate,
   });
 
   const chunks: Blob[] = [];
   let frameCount = 0;
+  let lastDrawTime = 0;
 
   // Return a promise that resolves with the trimmed blob
   return new Promise<Blob>((resolve, reject) => {
@@ -402,9 +408,8 @@ export async function standardTrimVideo(
       }
     };
 
-    mediaRecorder.onstop = () => {
-      console.log(`MediaRecorder stopped, processed ${frameCount} frames`);
-
+    // Create the cleanup function to be used later
+    const finishRecording = () => {
       try {
         if (chunks.length === 0) {
           throw new Error('No data was collected during trimming');
@@ -413,6 +418,25 @@ export async function standardTrimVideo(
         const trimmedBlob = new Blob(chunks, { type: mimeType });
         console.log(`Created trimmed blob: ${trimmedBlob.size} bytes`);
 
+        // Additional validation for iOS Safari
+        if (trimmedBlob.size < 1000 && isIOSSafari) {
+          console.warn(
+            'Very small video created, attempting emergency fallback'
+          );
+          // Try to create a minimum valid video for iOS
+          resolve(
+            createEmergencyVideoBlob(
+              sourceVideo,
+              canvas,
+              ctx,
+              startTime,
+              endTime,
+              mimeType
+            )
+          );
+          return;
+        }
+
         resolve(trimmedBlob);
       } catch (error) {
         console.error('Error creating final video:', error);
@@ -420,59 +444,64 @@ export async function standardTrimVideo(
       }
     };
 
-    // Start the MediaRecorder with more frequent chunks
-    mediaRecorder.start(isIOSSafari ? 100 : 50); // Less frequent chunks for iOS
+    mediaRecorder.onstop = () => {
+      console.log(`MediaRecorder stopped, processed ${frameCount} frames`);
+      finishRecording();
+    };
 
-    // Function to draw frames with Safari optimizations
+    // Start the MediaRecorder with more frequent chunks for iOS
+    mediaRecorder.start(isIOSSafari ? 100 : 50);
+
+    // Function to draw frames with iOS optimizations
     const captureFrames = () => {
       // Stop when we reach the end time
       if (sourceVideo.currentTime >= endTime) {
         console.log(`Reached end time (${endTime}s), stopping recorder`);
         sourceVideo.pause();
 
-        // iOS Safari needs a short delay before stopping to ensure data is processed
+        // iOS Safari needs a short delay before stopping to ensure data is captured
         if (isIOSSafari) {
-          setTimeout(() => mediaRecorder.stop(), 500);
+          setTimeout(() => mediaRecorder.stop(), 300);
         } else {
           mediaRecorder.stop();
         }
         return;
       }
 
-      // Draw frame to canvas
-      try {
-        // For iOS Safari, clear the canvas first (important)
-        if (isIOSSafari) {
-          ctx.clearRect(0, 0, canvas.width, canvas.height);
+      // For iOS Safari, only draw if enough time has passed (throttle)
+      const now = performance.now();
+      if (!isIOSSafari || now - lastDrawTime > 1000 / fps) {
+        lastDrawTime = now;
+
+        // Draw frame to canvas
+        try {
+          // Clear the canvas first (important for iOS Safari)
+          if (isIOSSafari) {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+          }
+
+          ctx.drawImage(sourceVideo, 0, 0, canvas.width, canvas.height);
+          frameCount++;
+        } catch (e) {
+          console.error('Error drawing frame:', e);
         }
 
-        ctx.drawImage(sourceVideo, 0, 0, canvas.width, canvas.height);
-        frameCount++;
-      } catch (e) {
-        console.error('Error drawing frame:', e);
-      }
-
-      // Log progress occasionally
-      if (frameCount % 30 === 0) {
-        console.log(
-          `Processed ${frameCount} frames, current time: ${sourceVideo.currentTime.toFixed(2)}s`
-        );
+        // Log progress occasionally
+        if (frameCount % 30 === 0) {
+          console.log(
+            `Processed ${frameCount} frames, current time: ${sourceVideo.currentTime.toFixed(2)}s`
+          );
+        }
       }
 
       // Continue capturing frames
       requestAnimationFrame(captureFrames);
     };
 
-    // Start the process by seeking to start time exactly (no buffer for iOS)
-    console.log('Seeking to start time:', startTime);
-    sourceVideo.currentTime = startTime;
-
-    // Once seeked, start playing and capturing frames
-    sourceVideo.onseeked = () => {
-      console.log('Seeked to start time, starting playback');
-
-      // Slower playback for iOS
-      sourceVideo.playbackRate = isIOSSafari ? 0.5 : 0.8;
+    // Slightly different approach for iOS Safari
+    const startRecording = () => {
+      // iOS prefers a slower playback rate
+      sourceVideo.playbackRate = isIOSSafari ? 0.6 : 0.8;
 
       sourceVideo
         .play()
@@ -486,36 +515,193 @@ export async function standardTrimVideo(
         });
     };
 
-    // Set a safety timeout
+    // Start the process by seeking to start time
+    console.log('Seeking to start time:', startTime);
+    sourceVideo.currentTime = startTime;
+
+    // Once seeked, start playing and capturing frames
+    sourceVideo.onseeked = () => {
+      console.log('Seeked to start time, starting playback');
+      startRecording();
+    };
+
+    // Safety timeouts - different for iOS
     const safetyTimeout = setTimeout(
       () => {
         if (mediaRecorder.state !== 'inactive') {
           console.warn('Trim operation taking too long, forcing completion');
+          sourceVideo.pause();
           mediaRecorder.stop();
         }
       },
       isIOSSafari ? 20000 : 30000
-    ); // Shorter timeout for iOS
+    ); // Shorter timeout on iOS
 
-    // Clean up the timeout when recording stops
-    mediaRecorder.onstop = () => {
-      clearTimeout(safetyTimeout);
-      console.log(`MediaRecorder stopped, processed ${frameCount} frames`);
+    // Additional safety for iOS to handle stuck recordings
+    if (isIOSSafari) {
+      // If we don't get any data within 5 seconds, restart the process
+      const iosDataCheckTimeout = setTimeout(() => {
+        if (chunks.length === 0 && mediaRecorder.state === 'recording') {
+          console.warn('No data received yet, trying emergency approach');
+          clearTimeout(safetyTimeout);
+          mediaRecorder.stop();
 
+          // Try emergency approach after a short delay
+          setTimeout(() => {
+            createEmergencyVideoBlob(
+              sourceVideo,
+              canvas,
+              ctx,
+              startTime,
+              endTime,
+              mimeType
+            )
+              .then(resolve)
+              .catch(reject);
+          }, 500);
+        }
+      }, 5000);
+
+      // Clean up this timeout when recording stops
+      mediaRecorder.onstop = () => {
+        clearTimeout(safetyTimeout);
+        clearTimeout(iosDataCheckTimeout);
+        console.log(`MediaRecorder stopped, processed ${frameCount} frames`);
+        finishRecording();
+      };
+    } else {
+      // For non-iOS, just clean up the main safety timeout
+      mediaRecorder.onstop = () => {
+        clearTimeout(safetyTimeout);
+        console.log(`MediaRecorder stopped, processed ${frameCount} frames`);
+        finishRecording();
+      };
+    }
+  });
+}
+
+// Emergency fallback for iOS Safari when normal recording fails
+async function createEmergencyVideoBlob(
+  video: HTMLVideoElement,
+  canvas: HTMLCanvasElement,
+  ctx: CanvasRenderingContext2D,
+  startTime: number,
+  endTime: number,
+  mimeType: string
+): Promise<Blob> {
+  console.log('Using emergency iOS fallback method');
+
+  // For emergency fallback, we'll capture key frames as images
+  // and create a video from them
+  const duration = endTime - startTime;
+  const frameCount = Math.max(10, Math.floor(duration * 5)); // At least 10 frames, or 5fps
+  const frameTimeSpacing = duration / frameCount;
+
+  const frameBlobs: Blob[] = [];
+
+  // Capture frames at regular intervals
+  for (let i = 0; i < frameCount; i++) {
+    const frameTime = startTime + i * frameTimeSpacing;
+
+    // Set video to this time
+    video.currentTime = frameTime;
+
+    // Wait for video to seek to this time
+    await new Promise<void>((resolve) => {
+      const onSeeked = () => {
+        video.removeEventListener('seeked', onSeeked);
+        resolve();
+      };
+      video.addEventListener('seeked', onSeeked);
+    });
+
+    // Draw frame to canvas
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+    // Get frame as blob
+    const frameBlob = await new Promise<Blob>((resolve) => {
+      canvas.toBlob((blob) => resolve(blob!), 'image/jpeg', 0.95);
+    });
+
+    frameBlobs.push(frameBlob);
+    console.log(`Captured emergency frame ${i + 1}/${frameCount}`);
+  }
+
+  // Create a new canvas stream for recording these frames
+  // @ts-ignore
+  const emergencyStream = canvas.captureStream(15);
+  const emergencyRecorder = new MediaRecorder(emergencyStream, {
+    mimeType: mimeType,
+    videoBitsPerSecond: 1500000, // Lower bitrate for emergency mode
+  });
+
+  const chunks: Blob[] = [];
+  emergencyRecorder.ondataavailable = (e) => {
+    if (e.data.size > 0) {
+      chunks.push(e.data);
+    }
+  };
+
+  // Start the recorder
+  emergencyRecorder.start();
+
+  // Play back our captured frames
+  let frameIndex = 0;
+  const playFrames = () => {
+    if (frameIndex >= frameBlobs.length) {
+      // All frames played, stop recording
+      emergencyRecorder.stop();
+      return;
+    }
+
+    // Draw the current frame
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // Create an image from the blob and draw it
+    const img = new Image();
+    const url = URL.createObjectURL(frameBlobs[frameIndex]);
+
+    img.onload = () => {
+      // Draw the image
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+      // Clean up
+      URL.revokeObjectURL(url);
+
+      // Schedule next frame
+      frameIndex++;
+      setTimeout(playFrames, 1000 / 15); // Play at 15fps
+    };
+
+    img.src = url;
+  };
+
+  // Start playing frames
+  playFrames();
+
+  // Wait for recording to complete
+  return new Promise<Blob>((resolve, reject) => {
+    emergencyRecorder.onstop = () => {
       try {
         if (chunks.length === 0) {
-          throw new Error('No data was collected during trimming');
+          throw new Error('Emergency recording failed');
         }
 
-        const trimmedBlob = new Blob(chunks, { type: mimeType });
-        console.log(`Created trimmed blob: ${trimmedBlob.size} bytes`);
-
-        resolve(trimmedBlob);
+        const emergencyBlob = new Blob(chunks, { type: mimeType });
+        console.log(`Created emergency blob: ${emergencyBlob.size} bytes`);
+        resolve(emergencyBlob);
       } catch (error) {
-        console.error('Error creating final video:', error);
         reject(error);
       }
     };
+
+    // Safety timeout
+    setTimeout(() => {
+      if (emergencyRecorder.state !== 'inactive') {
+        emergencyRecorder.stop();
+      }
+    }, 15000);
   });
 }
 
