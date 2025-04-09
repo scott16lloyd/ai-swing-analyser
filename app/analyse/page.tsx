@@ -2,7 +2,7 @@
 import React, { useRef, useState, useCallback, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Webcam from 'react-webcam';
-import { getSupportedMimeType } from '@/lib/videoUtils';
+// We'll create our own MIME type detection directly in this component
 
 function AnalysePage() {
   // Webcam component
@@ -14,6 +14,32 @@ function AnalysePage() {
   const router = useRouter();
   const isProcessingRef = useRef(false);
   const [cameraReady, setCameraReady] = useState(false);
+
+  // Function to determine supported MIME type
+  const getSupportedMimeType = useCallback(() => {
+    // Try these MIME types in order of preference
+    const mimeTypes = [
+      'video/webm;codecs=vp9,opus',
+      'video/webm;codecs=vp8,opus',
+      'video/webm;codecs=vp9',
+      'video/webm;codecs=vp8',
+      'video/webm',
+      'video/mp4',
+      'video/x-matroska',
+    ];
+
+    // MediaRecorder.isTypeSupported is the proper way to check
+    for (const type of mimeTypes) {
+      if (MediaRecorder.isTypeSupported(type)) {
+        console.log(`Browser supports MIME type: ${type}`);
+        return type;
+      }
+    }
+
+    // Fallback to a simple type for older browsers
+    console.warn('No preferred MIME types supported, falling back to default');
+    return ''; // Let the browser choose
+  }, []);
 
   // Handle webcam initialization
   const handleUserMedia = useCallback(() => {
@@ -58,10 +84,10 @@ function AnalysePage() {
       const mimeType = getSupportedMimeType();
       console.log('Using MIME type:', mimeType);
 
-      // Create a new MediaRecorder instance
-      const recorder = new MediaRecorder(webcamRef.current.stream, {
-        mimeType: mimeType,
-      });
+      // Create a new MediaRecorder instance - with or without mime type based on what's supported
+      const recorder = mimeType
+        ? new MediaRecorder(webcamRef.current.stream, { mimeType })
+        : new MediaRecorder(webcamRef.current.stream);
 
       console.log('MediaRecorder created successfully');
 
@@ -99,6 +125,11 @@ function AnalysePage() {
           alert(
             'Camera is in use by another application. Please close other apps using the camera.'
           );
+        } else if (err.message && err.message.includes('MIME')) {
+          // Special handling for MIME type errors
+          alert(
+            'Your device does not support the required video format. Try a different browser or device.'
+          );
         } else {
           alert(`Failed to start recording: ${err.message}. Please try again.`);
         }
@@ -111,7 +142,7 @@ function AnalysePage() {
         isProcessingRef.current = false;
       }, 500);
     }
-  }, [capturing, webcamRef]);
+  }, [capturing, webcamRef, getSupportedMimeType]);
 
   const handleStopCaptureClick = useCallback(() => {
     console.log('Stop button clicked');
@@ -177,11 +208,11 @@ function AnalysePage() {
     }
 
     // Get the type from the first chunk
-    const type = recordedChunks[0].type;
+    const type = recordedChunks[0].type || 'video/webm';
 
     // Create a blob from all chunks
     const blob = new Blob(recordedChunks, { type });
-    console.log(`Created blob with size: ${blob.size} bytes`);
+    console.log(`Created blob with size: ${blob.size} bytes and type: ${type}`);
 
     // Store the blob in IndexedDB
     const request = indexedDB.open('VideoDatabase', 1);
@@ -231,6 +262,15 @@ function AnalysePage() {
 
   // Request camera permissions at component mount
   useEffect(() => {
+    // Check if MediaRecorder is supported
+    if (typeof MediaRecorder === 'undefined') {
+      console.error('MediaRecorder not supported in this browser');
+      alert(
+        'Recording is not supported in your browser. Please try a different browser.'
+      );
+      return;
+    }
+
     if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
       navigator.mediaDevices
         .getUserMedia({
