@@ -1,10 +1,14 @@
 'use client';
 
 import React, { useEffect, useState, useCallback } from 'react';
-import { checkProcessedVideoStatus } from '@/app/actions/storage';
+import {
+  checkProcessedVideoStatus,
+  analyseGolfSwingLandmarks,
+} from '@/app/actions/storage';
 import { Button } from '@/components/ui/button';
 import { useRouter } from 'next/navigation';
 import { Activity } from 'lucide-react';
+import { escape } from 'querystring';
 
 // Type definitions
 interface ProcessedVideoResult {
@@ -22,6 +26,13 @@ interface TrimInfo {
   duration: number;
 }
 
+interface SwingAnalysisResult {
+  prediction: string;
+  confidence: number;
+  feedback: string[];
+  error?: string;
+}
+
 function AnalysisResults(): React.ReactElement {
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [processedVideo, setProcessedVideo] =
@@ -35,6 +46,9 @@ function AnalysisResults(): React.ReactElement {
   const [showDebugger, setShowDebugger] = useState<boolean>(false);
   const [originalVideo, setOriginalVideo] = useState<string | null>(null);
   const router = useRouter();
+  const [swingAnalysisResults, setSwingAnalysisResults] =
+    useState<SwingAnalysisResult | null>(null);
+  const [isAnalysing, setIsAnalysing] = useState(false);
 
   // Debug log function
   const debugLog = useCallback((message: string): void => {
@@ -165,6 +179,36 @@ function AnalysisResults(): React.ReactElement {
           debugLog('Processed video found!');
           if (pollInterval) clearInterval(pollInterval);
           setProcessedVideo(result);
+
+          // Construct the landmarks filename
+          const landmarksFileName = `landmarks/user/${baseName}_landmarks.json`;
+          debugLog(`Looking for landmarks file: ${landmarksFileName}`);
+
+          // Run analysis
+          setIsAnalysing(true);
+          try {
+            const analysisResult = await analyseGolfSwingLandmarks({
+              fileName: landmarksFileName,
+            });
+
+            debugLog(`Analysis result: ${JSON.stringify(analysisResult)}`);
+
+            if (analysisResult.error) {
+              debugLog(`Analysis error: ${analysisResult.error}`);
+            } else {
+              setSwingAnalysisResults(analysisResult);
+            }
+          } catch (analysisError) {
+            if (analysisError instanceof Error) {
+              debugLog(`Error during analysis: ${analysisError.message}`);
+            } else {
+              debugLog('Error during analysis: An unknown error occurred.');
+            }
+          } finally {
+            setIsAnalysing(false);
+            setIsLoading(false);
+          }
+
           setIsLoading(false);
         } else if (result.error) {
           debugLog(`Error in poll: ${result.error}`);
@@ -292,6 +336,43 @@ function AnalysisResults(): React.ReactElement {
                 loop
               />
             </div>
+
+            {/* Show loading state while analyzing */}
+            {isAnalysing && (
+              <div className="my-4">
+                <div className="w-8 h-8 border-t-2 border-blue-500 border-solid rounded-full animate-spin mx-auto"></div>
+                <p className="text-sm text-gray-400 mt-2">
+                  Analyzing your swing...
+                </p>
+              </div>
+            )}
+
+            {/* Show swing analysis results */}
+            {swingAnalysisResults && (
+              <div className="mt-4 text-left bg-gray-900 p-4 rounded-lg max-w-md mx-auto">
+                <div className="flex justify-between items-center mb-2">
+                  <h3 className="text-xl font-bold">Swing Analysis</h3>
+                  <div
+                    className={`px-3 py-1 rounded-full ${swingAnalysisResults.prediction === 'good' ? 'bg-green-900 text-green-200' : 'bg-amber-900 text-amber-200'}`}
+                  >
+                    {swingAnalysisResults.prediction === 'good'
+                      ? 'Good Swing'
+                      : 'Needs Work'}
+                  </div>
+                </div>
+
+                <div className="space-y-2 mt-4">
+                  {swingAnalysisResults.feedback.map((item, index) => (
+                    <p
+                      key={index}
+                      className={`${item.includes('DRILL SUGGESTIONS') ? 'font-bold mt-4' : ''}`}
+                    >
+                      {item}
+                    </p>
+                  ))}
+                </div>
+              </div>
+            )}
 
             <div className="mt-6 flex gap-4 justify-center">
               <Button onClick={handleBackToCapture} className="text-md p-5">
