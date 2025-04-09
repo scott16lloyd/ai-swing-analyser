@@ -768,7 +768,7 @@ function EditPage() {
           '-tune',
           'film', // Optimize for video content
           '-vf',
-          'scale=-2:720', // Scale to 720p height while maintaining aspect ratio
+          'scale=640:-2', // Scale to 720p height while maintaining aspect ratio
           '-an', // No audio
           outputFileName,
         ]);
