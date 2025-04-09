@@ -12,8 +12,12 @@ function AnalysePage() {
   const [recordedChunks, setRecordedChunks] = useState<Blob[]>([]);
   const [elapsedTime, setElapsedTime] = useState(0);
   const router = useRouter();
+  const isProcessingRef = useRef(false);
 
   const handleStartCaptureClick = useCallback(() => {
+    if (isProcessingRef.current) return;
+    isProcessingRef.current = true;
+
     setCapturing(true);
     if (webcamRef.current && webcamRef.current.stream) {
       const mimeType = getSupportedMimeType();
@@ -27,6 +31,11 @@ function AnalysePage() {
       );
       mediaRecorderRef.current.start();
     }
+
+    // Reset the processing flag after a small delay
+    setTimeout(() => {
+      isProcessingRef.current = false;
+    }, 500);
   }, [webcamRef, setCapturing, mediaRecorderRef]);
 
   const handleDataAvailable = useCallback(
@@ -90,6 +99,9 @@ function AnalysePage() {
   );
 
   const handleStopCaptureClick = useCallback(() => {
+    if (isProcessingRef.current) return;
+    isProcessingRef.current = true;
+
     console.log('Stop button clicked');
     if (mediaRecorderRef.current) {
       try {
@@ -106,24 +118,12 @@ function AnalysePage() {
         console.error('Error stopping recording:', err);
       }
     }
-  }, [mediaRecorderRef, setCapturing]);
 
-  const handleDownload = useCallback(() => {
-    if (recordedChunks.length) {
-      const blob = new Blob(recordedChunks, {
-        type: 'video/',
-      });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      document.body.appendChild(a);
-      a.style.display = 'none';
-      a.href = url;
-      a.download = 'react-webcam-stream-capture.webm';
-      a.click();
-      window.URL.revokeObjectURL(url);
-      setRecordedChunks([]);
-    }
-  }, [recordedChunks]);
+    // Reset the processing flag after a small delay
+    setTimeout(() => {
+      isProcessingRef.current = false;
+    }, 500);
+  }, [mediaRecorderRef, setCapturing]);
 
   // Caputre duration timer
   useEffect(() => {
@@ -138,7 +138,7 @@ function AnalysePage() {
     }
 
     return () => clearInterval(interval);
-  });
+  }, [capturing]);
 
   // Format the timer
   const formatTime = (seconds: number) => {
@@ -164,22 +164,24 @@ function AnalysePage() {
         </div>
       )}
       {/* Record button components */}
-      <div className="absolute bottom-24 left-0 right-0 flex justify-center pointer-events-auto">
+      <div className="absolute bottom-24 left-0 right-0 flex justify-center">
         {capturing ? (
           <button
             onClick={handleStopCaptureClick}
-            className="relative flex items-center justify-center w-24 h-16 rounded-full transition-colors duration-300 border-2 bg-red-500 border-red-600"
+            className="relative flex items-center justify-center w-24 h-16 rounded-full transition-colors duration-300 border-2 bg-red-500 border-red-600 active:bg-red-700 pointer-events-auto"
             aria-label="Stop recording"
             style={{ touchAction: 'manipulation' }}
             type="button"
           >
-            <div className="w-8 h-8 rounded-sm bg-white animate-pulse"></div>
+            <div className="w-8 h-8 rounded-sm bg-white"></div>
           </button>
         ) : (
           <button
             onClick={handleStartCaptureClick}
-            className="relative flex items-center justify-center w-24 h-16 rounded-full transition-colors duration-300 border-2 bg-white border-gray-300"
+            className="relative flex items-center justify-center w-24 h-16 rounded-full transition-colors duration-300 border-2 bg-white border-gray-300 active:bg-gray-100 pointer-events-auto"
             aria-label="Start recording"
+            style={{ touchAction: 'manipulation' }}
+            type="button"
           >
             <div className="w-12 h-12 rounded-full bg-red-500"></div>
           </button>
