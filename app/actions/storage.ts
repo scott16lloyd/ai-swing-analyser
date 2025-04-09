@@ -754,7 +754,6 @@ export async function analyseGolfSwingLandmarks({
     const analysisResult = await response.json();
     // Revalidate the results page to ensure fresh data
     revalidatePath('/analyse/results');
-
     return analysisResult;
   } catch (error) {
     console.error('Error analyzing golf swing:', error);

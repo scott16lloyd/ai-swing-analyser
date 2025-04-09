@@ -1,9 +1,11 @@
 /** @type {import('next').NextConfig} */
+const nextConfig = {
+  // Remove this line if it exists
+  // output: 'export',
 
-module.exports = {
-  experimental: {
-    serverActions: {
-      bodySizeLimit: '40mb',
-    },
-  },
+  // Keep other config settings
+  reactStrictMode: true,
+  // ... other settings
 };
+
+module.exports = nextConfig;

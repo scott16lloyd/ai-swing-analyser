@@ -8,7 +8,9 @@ import {
 import { Button } from '@/components/ui/button';
 import { useRouter } from 'next/navigation';
 import { Activity } from 'lucide-react';
-import { escape } from 'querystring';
+import { X } from 'lucide-react';
+import { Check } from 'lucide-react';
+import { GraduationCap } from 'lucide-react';
 
 // Type definitions
 interface ProcessedVideoResult {
@@ -49,6 +51,7 @@ function AnalysisResults(): React.ReactElement {
   const [swingAnalysisResults, setSwingAnalysisResults] =
     useState<SwingAnalysisResult | null>(null);
   const [isAnalysing, setIsAnalysing] = useState(false);
+  const [resultsReady, setResultsReady] = useState(false);
 
   // Debug log function
   const debugLog = useCallback((message: string): void => {
@@ -113,6 +116,15 @@ function AnalysisResults(): React.ReactElement {
     },
     [debugLog]
   );
+
+  // Effect to check if both video and analysis are ready
+  useEffect(() => {
+    if (processedVideo && swingAnalysisResults && !isAnalysing) {
+      debugLog('Both video and analysis results are ready');
+      setResultsReady(true);
+      setIsLoading(false);
+    }
+  }, [processedVideo, swingAnalysisResults, isAnalysing, debugLog]);
 
   useEffect(() => {
     // Get the trim info from sessionStorage
@@ -195,6 +207,7 @@ function AnalysisResults(): React.ReactElement {
 
             if (analysisResult.error) {
               debugLog(`Analysis error: ${analysisResult.error}`);
+              setIsLoading(false);
             } else {
               setSwingAnalysisResults(analysisResult);
             }
@@ -276,7 +289,7 @@ function AnalysisResults(): React.ReactElement {
   }, [router, debugLog]);
 
   return (
-    <div className="fixed inset-0 flex flex-col bg-black overflow-hidden bg-opacity-95 text-white">
+    <div className="fixed inset-0 flex flex-col bg-black bg-opacity-95 text-white overflow-y-auto">
       <div className="flex-1 flex flex-col items-center justify-center p-4">
         <h1 className="text-2xl font-bold mb-6 flex items-center">
           <Activity className="mr-2" />
@@ -320,35 +333,27 @@ function AnalysisResults(): React.ReactElement {
           </div>
         )}
 
-        {processedVideo && processedVideo.publicUrl && (
-          <div className="text-center">
-            <div className="bg-green-950 border border-green-400 text-green-300 px-4 py-3 rounded mb-4 max-w-md">
-              <p>Your swing analysis is ready!</p>
-            </div>
-
-            <div className="my-6">
-              <video
-                src={processedVideo.publicUrl}
-                controls
-                className="w-full max-w-md rounded-lg shadow-lg"
-                autoPlay
-                playsInline
-                loop
-              />
-            </div>
-
-            {/* Show loading state while analyzing */}
-            {isAnalysing && (
-              <div className="my-4">
-                <div className="w-8 h-8 border-t-2 border-blue-500 border-solid rounded-full animate-spin mx-auto"></div>
-                <p className="text-sm text-gray-400 mt-2">
-                  Analyzing your swing...
-                </p>
+        {resultsReady &&
+          processedVideo &&
+          processedVideo.publicUrl &&
+          swingAnalysisResults && (
+            <div className="text-center">
+              <div className="bg-green-950 border border-green-400 text-green-300 px-4 py-3 rounded mb-4 max-w-md">
+                <p>Your swing analysis is ready!</p>
               </div>
-            )}
 
-            {/* Show swing analysis results */}
-            {swingAnalysisResults && (
+              <div className="my-6">
+                <video
+                  src={processedVideo.publicUrl}
+                  controls
+                  className="w-full max-w-md rounded-lg shadow-lg"
+                  autoPlay
+                  playsInline
+                  loop
+                />
+              </div>
+
+              {/* Swing analysis results */}
               <div className="mt-4 text-left bg-gray-900 p-4 rounded-lg max-w-md mx-auto">
                 <div className="flex justify-between items-center mb-2">
                   <h3 className="text-xl font-bold">Swing Analysis</h3>
@@ -367,20 +372,53 @@ function AnalysisResults(): React.ReactElement {
                       key={index}
                       className={`${item.includes('DRILL SUGGESTIONS') ? 'font-bold mt-4' : ''}`}
                     >
-                      {item}
+                      {/* Analysis header and DRILL SUGGESTIONS header have no icon */}
+                      {item.includes("Here's a detailed analysis") ||
+                      item.includes('DRILL SUGGESTIONS') ? (
+                        item
+                      ) : /* Drill suggestions get GraduationCap icon */
+                      item.startsWith('Focus on') ||
+                        item.startsWith('Initiate') ||
+                        item.startsWith('Practice') ? (
+                        <>
+                          <GraduationCap
+                            className="inline-block mr-2"
+                            size={16}
+                            color="#3b82f6"
+                          />
+                          {item}
+                        </>
+                      ) : (
+                        /* Swing issues get Check/X icons */
+                        <>
+                          {swingAnalysisResults.prediction === 'good' ? (
+                            <Check
+                              className="inline-block mr-2"
+                              size={16}
+                              color="#00ff11"
+                            />
+                          ) : (
+                            <X
+                              className="inline-block mr-2"
+                              size={16}
+                              color="#ff0000"
+                            />
+                          )}
+                          {item}
+                        </>
+                      )}
                     </p>
                   ))}
                 </div>
               </div>
-            )}
 
-            <div className="mt-6 flex gap-4 justify-center">
-              <Button onClick={handleBackToCapture} className="text-md p-5">
-                Record Another Swing
-              </Button>
+              <div className="mt-6 flex gap-4 justify-center">
+                <Button onClick={handleBackToCapture} className="text-md p-5">
+                  Record Another Swing
+                </Button>
+              </div>
             </div>
-          </div>
-        )}
+          )}
       </div>
 
       {/* Debug panel */}
