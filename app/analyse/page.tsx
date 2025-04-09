@@ -19,12 +19,10 @@ function AnalysePage() {
   const getSupportedMimeType = useCallback(() => {
     // WebM is typically better supported for playback across browsers
     const mimeTypes = [
+      'video/webm;codecs=vp8', // Most compatible on Android
       'video/webm',
-      'video/webm;codecs=vp8',
-      'video/webm;codecs=vp9',
-      'video/mp4',
       'video/mp4;codecs=h264',
-      'video/x-matroska',
+      'video/mp4',
     ];
 
     for (const type of mimeTypes) {
@@ -234,6 +232,12 @@ function AnalysePage() {
     }
 
     try {
+      // Log the MIME types of all chunks for debugging
+      recordedChunksRef.current.forEach((chunk, index) => {
+        console.log(
+          `Chunk ${index} type: ${chunk.type}, size: ${chunk.size} bytes`
+        );
+      });
       // Android workaround - sometimes the first chunk is empty or corrupt
       const validChunks = recordedChunksRef.current.filter(
         (chunk) => chunk.size > 100
@@ -249,13 +253,15 @@ function AnalysePage() {
       }
 
       // Get the type from the first valid chunk
-      const firstValidChunk = validChunks[0];
-      const type = firstValidChunk.type || 'video/webm';
-      console.log(`Using MIME type for blob: ${type}`);
+      const mimeType = mediaRecorderRef.current?.mimeType || 'video/webm';
+      console.log(`Using MIME type for blob: ${mimeType}`);
 
       // Create a blob from all valid chunks
-      const blob = new Blob(validChunks, { type });
+      const blob = new Blob(validChunks, { type: mimeType });
       console.log(`Created blob: size=${blob.size} bytes, type=${blob.type}`);
+
+      // Always store the exact MIME type with the blob
+      sessionStorage.setItem('videoMimeType', mimeType);
 
       if (blob.size < 1000) {
         console.warn('Blob is very small, might be invalid');
@@ -270,12 +276,12 @@ function AnalysePage() {
       generatePlayableVersion(blob)
         .then((playableBlob) => {
           // Store in IndexedDB
-          storeVideoAndNavigate(playableBlob, type);
+          storeVideoAndNavigate(playableBlob, mimeType);
         })
         .catch((err) => {
           console.error('Error creating playable version:', err);
           // Try with original blob
-          storeVideoAndNavigate(blob, type);
+          storeVideoAndNavigate(blob, mimeType);
         });
     } catch (err) {
       console.error('Error processing video:', err);

@@ -177,50 +177,69 @@ function EditPage() {
     type: string
   ): Promise<Blob> => {
     return new Promise((resolve, reject) => {
+      mobileLog(`Checking blob: size=${originalBlob.size}, type=${type}`);
+
+      // For Android compatibility, ensure we have a valid MIME type
+      if (!type || type === 'application/octet-stream') {
+        // Try to detect from the Blob itself
+        type = originalBlob.type || 'video/webm';
+        mobileLog(`Updated type to: ${type}`);
+      }
+
+      // Create a new blob with the determined type to ensure proper metadata
+      const typedBlob = new Blob([originalBlob], { type });
+
       // First, check if this blob is directly playable
       const testVideo = document.createElement('video');
-      const url = URL.createObjectURL(originalBlob);
+      testVideo.muted = true;
+      const url = URL.createObjectURL(typedBlob);
 
       // Set a timeout in case the loadedmetadata event doesn't fire
       let timeoutId: number;
-      const startTimeout = () => {
-        timeoutId = window.setTimeout(() => {
-          mobileLog('Timeout waiting for video metadata, using original blob');
-          cleanup();
-          resolve(originalBlob);
-        }, 3000);
-      };
 
       const cleanup = () => {
         clearTimeout(timeoutId);
+        URL.revokeObjectURL(url);
         testVideo.removeEventListener('loadedmetadata', handleLoadedMetadata);
         testVideo.removeEventListener('error', handleError);
-        URL.revokeObjectURL(url);
       };
 
       const handleLoadedMetadata = () => {
         mobileLog('Video metadata loaded successfully, blob is playable');
         cleanup();
-        resolve(originalBlob);
+        resolve(typedBlob);
       };
 
       const handleError = (e: Event) => {
         mobileLog(`Error loading video: ${e}`);
         cleanup();
 
-        // Since the original blob isn't directly playable, we could convert it here
-        // using a worker or FFmpeg, but for this example we'll just use it as-is
-        resolve(originalBlob);
+        // Try with a fallback MIME type for Android
+        if (type !== 'video/webm;codecs=vp8') {
+          mobileLog('Trying with fallback MIME type: video/webm;codecs=vp8');
+          const fallbackBlob = new Blob([originalBlob], {
+            type: 'video/webm;codecs=vp8',
+          });
+          resolve(fallbackBlob);
+        } else {
+          // Just use the original as last resort
+          resolve(originalBlob);
+        }
       };
+
+      // Set up timeout
+      timeoutId = window.setTimeout(() => {
+        mobileLog('Timeout waiting for video metadata, using original blob');
+        cleanup();
+        resolve(typedBlob);
+      }, 3000);
 
       // Set up event listeners
       testVideo.addEventListener('loadedmetadata', handleLoadedMetadata);
       testVideo.addEventListener('error', handleError);
-
       // Start loading the video
       testVideo.src = url;
       testVideo.load();
-      startTimeout();
     });
   };
 
@@ -228,6 +247,50 @@ function EditPage() {
   useEffect(() => {
     // Only run this effect if we have a video source
     if (!videoSrc) return;
+
+    if (videoRef.current) {
+      // Add onerror handler directly on the video element
+      videoRef.current.onerror = (e) => {
+        const error = ((e as Event).target as HTMLVideoElement).error;
+        mobileLog(`Video error: ${error?.code} - ${error?.message}`);
+
+        // If there's a MEDIA_ERR_SRC_NOT_SUPPORTED or MEDIA_ERR_DECODE error, try to recover
+        if (
+          error?.code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED ||
+          error?.code === MediaError.MEDIA_ERR_DECODE
+        ) {
+          mobileLog('Trying to recover from media error...');
+
+          // Get video from IndexedDB again and try with a different format
+          const request = indexedDB.open('VideoDatabase', 1);
+          request.onsuccess = (event) => {
+            const db = (event.target as IDBOpenDBRequest).result;
+            const transaction = db.transaction(['videos'], 'readonly');
+            const store = transaction.objectStore('videos');
+            const getRequest = store.get('currentVideo');
+
+            getRequest.onsuccess = () => {
+              if (getRequest.result) {
+                const videoData = getRequest.result;
+                const blob = videoData.blob;
+
+                // Try with explicit WebM format for Android
+                const recoveryBlob = new Blob([blob], {
+                  type: 'video/webm;codecs=vp8',
+                });
+                const recoveryUrl = URL.createObjectURL(recoveryBlob);
+
+                // Try to play with the new URL
+                if (videoRef.current) {
+                  videoRef.current.src = recoveryUrl;
+                  setVideoSrc(recoveryUrl);
+                }
+              }
+            };
+          };
+        }
+      };
+    }
 
     mobileLog(`Starting duration detection for video: ${videoSrc}`);
 
