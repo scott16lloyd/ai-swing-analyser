@@ -650,8 +650,8 @@ function EditPage() {
 
       // Create a canvas with the same dimensions as the video
       const canvas = document.createElement('canvas');
-      canvas.width = sourceVideo.videoWidth || 640;
-      canvas.height = sourceVideo.videoHeight || 480;
+      canvas.width = Math.max(sourceVideo.videoWidth || 1280, 1280); // At least 1280px wide
+      canvas.height = Math.max(sourceVideo.videoHeight || 720, 720); // At least 720px high
       const ctx = canvas.getContext('2d');
 
       if (!ctx) {
@@ -756,17 +756,19 @@ function EditPage() {
           '-c:v',
           'libx264',
           '-profile:v',
-          'baseline', // Most compatible profile
+          'main', // Better quality profile that's still compatible
           '-level',
-          '3.0', // Lower level for better compatibility
+          '4.0', // Higher level for better quality
           '-pix_fmt',
           'yuv420p',
           '-crf',
-          '28', // Higher CRF = lower quality but smaller file
+          '22', // Lower value = higher quality (22 is good quality)
           '-preset',
-          'fast',
+          'medium', // Better compression (balance of speed vs quality)
+          '-tune',
+          'film', // Optimize for video content
           '-vf',
-          'scale=640:-2', // Resize to smaller dimensions
+          'scale=-2:720', // Scale to 720p height while maintaining aspect ratio
           '-an', // No audio
           outputFileName,
         ]);
@@ -786,6 +788,7 @@ function EditPage() {
             trimmed: 'true',
             width: canvas.width.toString(),
             height: canvas.height.toString(),
+            userAgent: navigator.userAgent,
           },
         });
 
@@ -870,11 +873,7 @@ function EditPage() {
         videoElement.addEventListener('seeked', onSeeked);
 
         // Add timeout in case event never fires
-        setTimeout(() => {
-          videoElement.removeEventListener('seeked', onSeeked);
-          console.log('Seek timeout, continuing anyway');
-          resolve();
-        }, 5000);
+        setTimeout(() => resolve(), 2000);
       });
 
       // Import FFmpeg directly here for the fallback
@@ -892,12 +891,13 @@ function EditPage() {
 
       console.log(`Capturing ${frameCount} frames at ${fps} fps`);
 
+      // Make sure canvas size is reasonable but not too small
+      const canvasWidth = canvas.width;
+      const canvasHeight = canvas.height;
+      console.log(`Using canvas size: ${canvasWidth}x${canvasHeight}`);
+
       // Create directory for frames
       await ffmpeg.createDir('frames');
-
-      // Start capturing frames
-      let capturedFrames = 0;
-      const framesPerProgress = Math.max(1, Math.floor(frameCount / 10)); // For progress updates
 
       // Start capturing frames
       for (let i = 0; i < frameCount; i++) {
@@ -915,71 +915,59 @@ function EditPage() {
           videoElement.addEventListener('seeked', onSeeked);
 
           // Timeout for cases where seeked event doesn't fire
-          setTimeout(() => {
-            videoElement.removeEventListener('seeked', onSeeked);
-            resolve();
-          }, 500);
+          setTimeout(() => resolve(), 200);
         });
 
-        try {
-          // Draw the frame
-          ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+        // Draw the frame
+        ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
 
-          // Get the frame as a blob
-          const frameDataUrl = canvas.toDataURL('image/jpeg', 0.7);
-          const frameBlob = await (await fetch(frameDataUrl)).blob();
+        // Get the frame as a blob
+        const frameDataUrl = canvas.toDataURL('image/jpeg', 0.9);
+        const frameBlob = await (await fetch(frameDataUrl)).blob();
 
-          // Write frame to FFmpeg
-          const frameData = await fetchFile(frameBlob);
-          const paddedIndex = i.toString().padStart(4, '0');
-          await ffmpeg.writeFile(`frames/frame${paddedIndex}.jpg`, frameData);
+        // Write frame to FFmpeg
+        const frameData = await fetchFile(frameBlob);
+        const paddedIndex = i.toString().padStart(4, '0');
+        await ffmpeg.writeFile(`frames/frame${paddedIndex}.jpg`, frameData);
 
-          capturedFrames++;
-
-          // Log progress occasionally
-          if (i % framesPerProgress === 0 || i === frameCount - 1) {
-            console.log(`Captured frame ${i + 1}/${frameCount}`);
-          }
-        } catch (error) {
-          console.error(`Error capturing frame ${i}:`, error);
+        if (i % 10 === 0) {
+          console.log(`Captured frame ${i + 1}/${frameCount}`);
         }
       }
 
-      console.log(`Successfully captured ${capturedFrames} frames`);
-
-      if (capturedFrames === 0) {
-        throw new Error('Failed to capture any frames');
-      }
-
-      console.log('Creating video from frames...');
+      // Define input and output file names
+      const inputFramePattern = 'frames/frame%04d.jpg';
+      const outputFileName = 'output.mp4';
 
       // Create video from frames
       await ffmpeg.exec([
         '-framerate',
         fps.toString(),
         '-i',
-        'frames/frame%04d.jpg',
+        inputFramePattern,
         '-c:v',
         'libx264',
         '-profile:v',
-        'baseline',
+        'main', // Use main profile instead of baseline for better quality
         '-level',
-        '3.0',
+        '4.0', // Higher level (still mobile compatible)
         '-pix_fmt',
         'yuv420p',
         '-crf',
-        '28', // Higher value = lower quality but smaller size
+        '22', // Lower CRF value = higher quality (23-28 is normal, 18-22 is higher quality)
         '-preset',
-        'veryfast', // Faster encoding
+        'medium', // Better compression (balance of speed/quality)
+        '-tune',
+        'film', // Optimize for video content
         '-movflags',
-        '+faststart', // For web streaming
-        'output.mp4',
+        '+faststart',
+        outputFileName,
       ]);
 
       console.log('Video creation complete, reading output file');
 
       // Read the output video
-      const data = await ffmpeg.readFile('output.mp4');
+      const data = await ffmpeg.readFile(outputFileName);
       console.log(`Output video size: ${data.length} bytes`);
       return new Blob([data], { type: 'video/mp4' });
     } catch (error) {
