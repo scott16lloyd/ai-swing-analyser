@@ -825,7 +825,7 @@ function EditPage() {
         };
 
         mediaRecorder.onerror = (event) => {
-          reject(new Error('MediaRecorder error: ' + event.error));
+          reject(new Error('MediaRecorder error occurred'));
         };
       });
 
