@@ -8,22 +8,21 @@ function AnalysePage() {
   const webcamRef = useRef<Webcam | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const [capturing, setCapturing] = useState(false);
-  const [recordedChunks, setRecordedChunks] = useState<Blob[]>([]);
+  const recordedChunksRef = useRef<Blob[]>([]); // Use ref instead of state for chunks
   const [elapsedTime, setElapsedTime] = useState(0);
   const router = useRouter();
   const isProcessingRef = useRef(false);
   const [cameraReady, setCameraReady] = useState(false);
-  const dataAvailableRef = useRef(false);
 
   // Function to determine supported MIME type
   const getSupportedMimeType = useCallback(() => {
     const mimeTypes = [
-      'video/webm;codecs=vp9,opus',
-      'video/webm;codecs=vp8,opus',
-      'video/webm;codecs=vp9',
-      'video/webm;codecs=vp8',
       'video/webm',
+      'video/webm;codecs=vp8',
+      'video/webm;codecs=vp9',
+      'video/webm;codecs=h264',
       'video/mp4',
+      'video/mp4;codecs=h264',
       'video/x-matroska',
     ];
 
@@ -52,6 +51,7 @@ function AnalysePage() {
     );
   }, []);
 
+  // Function to start recording
   const handleStartCaptureClick = useCallback(() => {
     console.log('Start button clicked');
 
@@ -64,103 +64,104 @@ function AnalysePage() {
     isProcessingRef.current = true;
 
     try {
-      if (!webcamRef.current) {
-        throw new Error('Webcam reference not available');
-      }
-
-      if (!webcamRef.current.stream) {
+      if (!webcamRef.current || !webcamRef.current.stream) {
         throw new Error('Webcam stream not available');
       }
 
-      console.log(
-        'Webcam stream tracks:',
-        webcamRef.current.stream.getTracks().map((t) => t.kind)
-      );
-
-      // Reset the data available flag
-      dataAvailableRef.current = false;
-
       // Clear previous chunks
-      setRecordedChunks([]);
+      recordedChunksRef.current = [];
+
+      // Get the stream
+      const stream = webcamRef.current.stream;
+
+      // Log stream details
+      console.log(
+        'Stream tracks:',
+        stream.getTracks().map((t) => `${t.kind} (${t.readyState})`)
+      );
 
       // Get supported MIME type
       const mimeType = getSupportedMimeType();
-      console.log('Using MIME type:', mimeType);
 
-      // Create MediaRecorder options
+      // Create options object
       const options: MediaRecorderOptions = {};
       if (mimeType) {
         options.mimeType = mimeType;
+        console.log('Using MIME type:', mimeType);
+      } else {
+        console.log('Using browser default MIME type');
       }
 
-      // Create a new MediaRecorder instance
-      const recorder = new MediaRecorder(webcamRef.current.stream, options);
+      // Try to adjust bitrate for better compatibility
+      if (options.mimeType && options.mimeType.includes('webm')) {
+        // Lower bitrate for better compatibility
+        (options as any).videoBitsPerSecond = 2500000; // 2.5 Mbps
+      }
 
+      // Create recorder
+      const recorder = new MediaRecorder(stream, options);
       console.log('MediaRecorder created with state:', recorder.state);
-      console.log('MediaRecorder mimeType:', recorder.mimeType);
+      console.log('Using recorder MIME type:', recorder.mimeType);
 
-      // Set up event listeners
+      // Set up data handler
       recorder.ondataavailable = (event) => {
-        console.log('Data available event, size:', event.data.size);
+        console.log(
+          `Data available: size=${event.data.size}, type=${event.data.type}`
+        );
         if (event.data && event.data.size > 0) {
-          dataAvailableRef.current = true;
-          setRecordedChunks((prev) => {
-            console.log('Adding chunk, current count:', prev.length);
-            return [...prev, event.data];
-          });
+          recordedChunksRef.current.push(event.data);
+          console.log(
+            `Added chunk, now have ${recordedChunksRef.current.length} chunks`
+          );
         }
       };
 
-      recorder.onstop = () => {
-        console.log('MediaRecorder stopped');
-      };
-
+      // Error handler
       recorder.onerror = (event) => {
         console.error('MediaRecorder error:', event);
       };
 
-      // Start recording with a timeslice to ensure we get regular data chunks
-      // Use a smaller timeslice for more frequent data chunks
-      recorder.start(500);
-      console.log('MediaRecorder started with state:', recorder.state);
+      // On stop handler
+      recorder.onstop = () => {
+        console.log('MediaRecorder stopped, processing data...');
+        setTimeout(() => {
+          processRecordedData();
+        }, 300);
+      };
 
-      // Store the recorder reference
+      // Start with a smaller timeslice for Android
+      recorder.start(200);
+      console.log('MediaRecorder started');
+
+      // Store reference and update state
       mediaRecorderRef.current = recorder;
-
-      // Update UI state
       setCapturing(true);
+
+      // Request data immediately to ensure we get something
+      setTimeout(() => {
+        if (recorder.state === 'recording') {
+          recorder.requestData();
+          console.log('Requested initial data');
+        }
+      }, 500);
     } catch (err) {
       console.error('Error starting recording:', err);
       setCapturing(false);
 
-      // Show more specific error message
       if (err instanceof Error) {
-        if (err.name === 'NotAllowedError') {
-          alert(
-            'Camera permission denied. Please allow camera access and try again.'
-          );
-        } else if (err.name === 'NotReadableError') {
-          alert(
-            'Camera is in use by another application. Please close other apps using the camera.'
-          );
-        } else if (err.message && err.message.includes('MIME')) {
-          alert(
-            'Your device does not support the required video format. Try a different browser.'
-          );
-        } else {
-          alert(`Failed to start recording: ${err.message}. Please try again.`);
-        }
+        alert(`Failed to start recording: ${err.message}`);
       } else {
         alert('Failed to start recording. Please try again.');
       }
-    } finally {
-      // Reset processing flag after a delay
-      setTimeout(() => {
-        isProcessingRef.current = false;
-      }, 500);
     }
+
+    // Reset processing flag
+    setTimeout(() => {
+      isProcessingRef.current = false;
+    }, 500);
   }, [capturing, webcamRef, getSupportedMimeType]);
 
+  // Function to stop recording
   const handleStopCaptureClick = useCallback(() => {
     console.log('Stop button clicked');
 
@@ -172,169 +173,168 @@ function AnalysePage() {
 
     isProcessingRef.current = true;
 
+    // Update UI first
+    setCapturing(false);
+
     try {
-      // Update UI state first
-      setCapturing(false);
-
       if (!mediaRecorderRef.current) {
-        console.error('MediaRecorder reference not available');
-        throw new Error('Recording device not available');
-      }
-
-      console.log(
-        'MediaRecorder state before stopping:',
-        mediaRecorderRef.current.state
-      );
-
-      if (mediaRecorderRef.current.state === 'recording') {
-        // Request data one more time before stopping
-        mediaRecorderRef.current.requestData();
-
-        // Small delay to ensure data is processed
-        setTimeout(() => {
-          if (mediaRecorderRef.current) {
-            try {
-              // Stop the recorder
-              mediaRecorderRef.current.stop();
-              console.log('MediaRecorder stopped successfully');
-            } catch (stopErr) {
-              console.error('Error stopping MediaRecorder:', stopErr);
-            }
-
-            // Process data after a delay to ensure all chunks are collected
-            setTimeout(() => {
-              console.log(
-                'Processing data after stop, chunks:',
-                recordedChunks.length
-              );
-              console.log('Data available flag:', dataAvailableRef.current);
-
-              if (recordedChunks.length > 0) {
-                processRecordedData(recordedChunks);
-              } else {
-                console.error('No chunks collected during recording');
-                alert(
-                  'No video data was captured. Please try again and record for at least 1-2 seconds.'
-                );
-              }
-            }, 1000);
-          }
-        }, 200);
-      } else {
-        console.log('MediaRecorder not in recording state, cannot stop');
-        // Try to process any data we might have
-        if (recordedChunks.length > 0) {
-          processRecordedData(recordedChunks);
-        } else {
-          console.error(
-            'No chunks collected and recorder not in recording state'
-          );
-          alert(
-            'Recording failed. Please try again and record for at least 1-2 seconds.'
-          );
-        }
-      }
-    } catch (err) {
-      console.error('Error in stop capture process:', err);
-      // Try to process what we have even if there's an error
-      if (recordedChunks.length > 0) {
-        processRecordedData(recordedChunks);
-      } else {
-        alert(
-          'Failed to capture video. Please try again and record for at least 1-2 seconds.'
-        );
-      }
-    } finally {
-      // Reset processing flag after a delay
-      setTimeout(() => {
-        isProcessingRef.current = false;
-      }, 1000);
-    }
-  }, [capturing, recordedChunks]);
-
-  // Process recorded data and navigate to edit page
-  const processRecordedData = useCallback(
-    (chunks: Blob[]) => {
-      console.log(`Processing ${chunks.length} chunks of recorded data`);
-
-      if (chunks.length === 0) {
-        console.error('No recorded data available');
-        alert(
-          'No video data recorded. Please try again and record for at least 1-2 seconds.'
-        );
+        console.error('MediaRecorder not available');
+        processRecordedData(); // Try to process anyway
         return;
       }
 
-      try {
-        // Get the type from the first chunk or use a default
-        const type = chunks[0].type || 'video/webm';
-        console.log('Chunk mime type:', type);
+      // Request final data
+      if (mediaRecorderRef.current.state === 'recording') {
+        console.log('Requesting final data chunk');
+        mediaRecorderRef.current.requestData();
 
-        // Create a blob from all chunks
-        const blob = new Blob(chunks, { type });
-        console.log(
-          `Created blob with size: ${blob.size} bytes and type: ${type}`
-        );
-
-        if (blob.size < 100) {
-          console.error('Blob size too small, likely invalid recording');
-          alert(
-            'Recording too short or failed. Please try again and record for at least 1-2 seconds.'
-          );
-          return;
-        }
-
-        // Store the blob in IndexedDB
-        const request = indexedDB.open('VideoDatabase', 1);
-
-        request.onupgradeneeded = (event) => {
-          const db = (event.target as IDBOpenDBRequest).result;
-          if (!db.objectStoreNames.contains('videos')) {
-            db.createObjectStore('videos', { keyPath: 'id' });
+        // Small delay to ensure we get the data
+        setTimeout(() => {
+          try {
+            console.log('Stopping MediaRecorder');
+            mediaRecorderRef.current?.stop();
+            // No need to call processRecordedData here as it's called in onstop
+          } catch (err) {
+            console.error('Error stopping recorder:', err);
+            // Try to process anyway
+            processRecordedData();
           }
+        }, 300);
+      } else {
+        console.log('MediaRecorder not recording, processing data');
+        processRecordedData();
+      }
+    } catch (err) {
+      console.error('Error in stop process:', err);
+      // Try to process anyway
+      processRecordedData();
+    }
+  }, [capturing]);
+
+  // Process recorded data and navigate to edit page
+  const processRecordedData = useCallback(() => {
+    console.log(
+      `Processing ${recordedChunksRef.current.length} chunks of recorded data`
+    );
+
+    // Reset processing flag after we're done
+    const resetProcessing = () => {
+      setTimeout(() => {
+        isProcessingRef.current = false;
+      }, 500);
+    };
+
+    if (recordedChunksRef.current.length === 0) {
+      console.error('No recorded data available');
+      alert(
+        'No video data recorded. Please try again and record for at least 2-3 seconds.'
+      );
+      resetProcessing();
+      return;
+    }
+
+    try {
+      // Android workaround - sometimes the first chunk is empty or corrupt
+      const validChunks = recordedChunksRef.current.filter(
+        (chunk) => chunk.size > 100
+      );
+
+      if (validChunks.length === 0) {
+        console.error('No valid chunks available');
+        alert(
+          'Recording failed. Please try again and record for longer (3-5 seconds).'
+        );
+        resetProcessing();
+        return;
+      }
+
+      // Get the type from the first valid chunk
+      const firstValidChunk = validChunks[0];
+      const type = firstValidChunk.type || 'video/webm';
+      console.log(`Using MIME type for blob: ${type}`);
+
+      // Create a blob from all valid chunks
+      const blob = new Blob(validChunks, { type });
+      console.log(`Created blob: size=${blob.size} bytes, type=${blob.type}`);
+
+      if (blob.size < 1000) {
+        console.warn('Blob is very small, might be invalid');
+        // Continue anyway - some devices create valid but small recordings
+      }
+
+      // Store in IndexedDB
+      storeVideoAndNavigate(blob, type);
+    } catch (err) {
+      console.error('Error processing video:', err);
+      alert('Error processing video. Please try again.');
+      resetProcessing();
+    }
+  }, []);
+
+  // Store video and navigate
+  const storeVideoAndNavigate = useCallback(
+    (blob: Blob, type: string) => {
+      // Store the blob in IndexedDB
+      const request = indexedDB.open('VideoDatabase', 1);
+
+      request.onupgradeneeded = (event) => {
+        const db = (event.target as IDBOpenDBRequest).result;
+        if (!db.objectStoreNames.contains('videos')) {
+          db.createObjectStore('videos', { keyPath: 'id' });
+        }
+      };
+
+      request.onsuccess = (event) => {
+        const db = (event.target as IDBOpenDBRequest).result;
+        const transaction = db.transaction(['videos'], 'readwrite');
+        const store = transaction.objectStore('videos');
+
+        // Store the video with ID 'currentVideo'
+        store.put({ id: 'currentVideo', blob: blob, type: type });
+
+        transaction.oncomplete = () => {
+          // Save metadata in session storage
+          sessionStorage.setItem('videoMimeType', type);
+          sessionStorage.setItem('needsRefresh', 'true');
+          sessionStorage.setItem('videoStored', 'true');
+
+          console.log('Video stored successfully, navigating to edit page');
+          router.push('/analyse/edit');
         };
+      };
 
-        request.onsuccess = (event) => {
-          const db = (event.target as IDBOpenDBRequest).result;
-          const transaction = db.transaction(['videos'], 'readwrite');
-          const store = transaction.objectStore('videos');
+      request.onerror = (event) => {
+        console.error('IndexedDB error:', event);
 
-          // Store the video with ID 'currentVideo'
-          store.put({ id: 'currentVideo', blob: blob, type: type });
-
-          transaction.oncomplete = () => {
-            // Save metadata in session storage
-            sessionStorage.setItem('videoMimeType', type);
-            sessionStorage.setItem('needsRefresh', 'true');
-            sessionStorage.setItem('videoStored', 'true');
-
-            console.log('Video stored successfully, navigating to edit page');
+        // Try alternative storage method
+        try {
+          const reader = new FileReader();
+          reader.onload = () => {
+            const dataUri = reader.result as string;
+            sessionStorage.setItem('recordedVideo', dataUri);
             router.push('/analyse/edit');
           };
-        };
+          reader.readAsDataURL(blob);
+        } catch (e) {
+          console.error('Failed to store video:', e);
+          alert('Failed to save video. Please try again.');
 
-        request.onerror = (event) => {
-          console.error('IndexedDB error:', event);
-          // Fallback for very small videos
-          try {
-            const reader = new FileReader();
-            reader.onload = () => {
-              const dataUri = reader.result as string;
-              sessionStorage.setItem('recordedVideo', dataUri);
-              router.push('/analyse/edit');
-            };
-            reader.readAsDataURL(blob);
-          } catch (e) {
-            console.error('Failed to store video: ', e);
-          }
-        };
-      } catch (err) {
-        console.error('Error processing recorded data:', err);
-        alert('Error processing the recorded video. Please try again.');
-      }
+          // Reset processing flag
+          setTimeout(() => {
+            isProcessingRef.current = false;
+          }, 500);
+        }
+      };
     },
     [router]
   );
+
+  // Get minimum required recording time
+  const getMinRecordingTime = useCallback(() => {
+    // Android usually needs longer recording time
+    const userAgent = navigator.userAgent.toLowerCase();
+    return userAgent.includes('android') ? 3 : 1; // 3 seconds for Android, 1 for others
+  }, []);
 
   // Request camera permissions at component mount
   useEffect(() => {
@@ -350,13 +350,15 @@ function AnalysePage() {
     if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
       navigator.mediaDevices
         .getUserMedia({
-          video: true,
+          video: {
+            facingMode: 'user',
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+          },
           audio: false,
         })
         .then((stream) => {
           console.log('Camera permission granted');
-          // We don't need to do anything with the stream here
-          // Webcam component will handle it
 
           // Clean up stream when component unmounts
           return () => {
@@ -370,11 +372,22 @@ function AnalysePage() {
     }
   }, []);
 
-  // Safety timeout to prevent endless recording
+  // Auto-stop for safety and to enforce minimum recording time
   useEffect(() => {
     let safetyTimeout: NodeJS.Timeout;
 
     if (capturing) {
+      // Force data request periodically
+      const dataInterval = setInterval(() => {
+        if (
+          mediaRecorderRef.current &&
+          mediaRecorderRef.current.state === 'recording'
+        ) {
+          mediaRecorderRef.current.requestData();
+          console.log('Periodic data request');
+        }
+      }, 1000);
+
       // Auto-stop after 2 minutes for safety
       safetyTimeout = setTimeout(() => {
         if (capturing && mediaRecorderRef.current) {
@@ -384,11 +397,19 @@ function AnalysePage() {
           handleStopCaptureClick();
         }
       }, 120000); // 2 minutes
+
+      return () => {
+        clearInterval(dataInterval);
+        clearTimeout(safetyTimeout);
+      };
     }
 
+    return () => {};
+  }, [capturing, handleStopCaptureClick, getMinRecordingTime]);
+
+  // Cleanup on unmount
+  useEffect(() => {
     return () => {
-      clearTimeout(safetyTimeout);
-      // Clean up recording on unmount
       if (
         mediaRecorderRef.current &&
         mediaRecorderRef.current.state === 'recording'
@@ -400,7 +421,7 @@ function AnalysePage() {
         }
       }
     };
-  }, [capturing, handleStopCaptureClick]);
+  }, []);
 
   // Timer for recording duration
   useEffect(() => {
