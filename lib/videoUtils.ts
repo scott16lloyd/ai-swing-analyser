@@ -362,19 +362,54 @@ export async function standardTrimVideo(
 ): Promise<Blob> {
   console.log('Using standard trim approach');
 
-  // Get high quality MIME type
-  const mimeType = getHighQualityMimeType();
+  // Get supported MIME type - prioritize WebM formats for Android compatibility
+  const mimeType = getSupportedMimeType();
+  console.log(`Selected MIME type for recording: ${mimeType}`);
 
   // Create a stream from the canvas
   // @ts-ignore
-  // INCREASED FPS for better capture
-  const canvasStream = canvas.captureStream(60); // Increased to 60 FPS
+  const canvasStream = canvas.captureStream(30); // 30 FPS is more compatible
 
-  // Set up high quality MediaRecorder
-  const mediaRecorder = new MediaRecorder(canvasStream, {
-    mimeType: mimeType,
-    videoBitsPerSecond: 8000000, // Increased to 8Mbps for high quality
-  });
+  // Set up MediaRecorder with more compatible settings
+  const options: MediaRecorderOptions = {};
+
+  if (mimeType) {
+    options.mimeType = mimeType;
+  }
+
+  // Use a moderate bitrate for better compatibility
+  (options as any).videoBitsPerSecond = 2000000; // 2Mbps is more compatible
+
+  console.log(`Creating MediaRecorder with options:`, options);
+
+  // Try to create MediaRecorder with the options
+  let mediaRecorder: MediaRecorder;
+
+  try {
+    mediaRecorder = new MediaRecorder(canvasStream, options);
+    console.log(
+      `MediaRecorder created successfully with MIME type: ${mediaRecorder.mimeType}`
+    );
+  } catch (error) {
+    console.error(
+      'Failed to create MediaRecorder with specified options:',
+      error
+    );
+
+    // Try again with minimal options
+    try {
+      mediaRecorder = new MediaRecorder(canvasStream);
+      console.log(
+        `Fallback MediaRecorder created with MIME type: ${mediaRecorder.mimeType}`
+      );
+    } catch (fallbackError) {
+      console.error(
+        'Failed to create MediaRecorder even with fallback options:',
+        fallbackError
+      );
+      throw new Error('MediaRecorder is not supported on this device');
+    }
+  }
 
   const chunks: Blob[] = [];
   let frameCount = 0;
@@ -382,12 +417,28 @@ export async function standardTrimVideo(
   // Return a promise that resolves with the trimmed blob
   return new Promise<Blob>((resolve, reject) => {
     mediaRecorder.ondataavailable = (e) => {
-      if (e.data.size > 0) {
+      if (e.data && e.data.size > 0) {
         chunks.push(e.data);
+        console.log(
+          `Received data chunk: ${e.data.size} bytes, type: ${e.data.type}`
+        );
       }
     };
 
+    // Set up safety timeout
+    const safetyTimeout = setTimeout(() => {
+      if (mediaRecorder.state !== 'inactive') {
+        console.warn('Trim operation taking too long, forcing completion');
+        try {
+          mediaRecorder.stop();
+        } catch (e) {
+          console.error('Error stopping recorder in timeout:', e);
+        }
+      }
+    }, 30000); // 30-second safety timeout
+
     mediaRecorder.onstop = () => {
+      clearTimeout(safetyTimeout);
       console.log(`MediaRecorder stopped, processed ${frameCount} frames`);
 
       try {
@@ -395,8 +446,12 @@ export async function standardTrimVideo(
           throw new Error('No data was collected during trimming');
         }
 
-        const trimmedBlob = new Blob(chunks, { type: mimeType });
-        console.log(`Created trimmed blob: ${trimmedBlob.size} bytes`);
+        // Use the MediaRecorder's actual MIME type for the blob
+        const actualType = mediaRecorder.mimeType || 'video/webm';
+        const trimmedBlob = new Blob(chunks, { type: actualType });
+        console.log(
+          `Created trimmed blob: ${trimmedBlob.size} bytes, type: ${actualType}`
+        );
 
         resolve(trimmedBlob);
       } catch (error) {
@@ -405,15 +460,33 @@ export async function standardTrimVideo(
       }
     };
 
+    mediaRecorder.onerror = (event) => {
+      clearTimeout(safetyTimeout);
+      console.error('MediaRecorder error:', event);
+      reject(new Error('MediaRecorder encountered an error'));
+    };
+
     // Start the MediaRecorder with more frequent chunks
-    mediaRecorder.start(50); // More frequent chunks for better quality
+    try {
+      mediaRecorder.start(100); // 100ms chunks for better reliability
+      console.log('MediaRecorder started');
+    } catch (e) {
+      console.error('Error starting MediaRecorder:', e);
+      clearTimeout(safetyTimeout);
+      reject(new Error('Failed to start MediaRecorder'));
+      return;
+    }
 
     // Function to draw frames
     const captureFrames = () => {
-      // Stop when we reach the end time with a small buffer to ensure we don't cut off too early
-      if (sourceVideo.currentTime >= endTime + 0.2) {
+      // Stop when we reach the end time
+      if (sourceVideo.currentTime >= endTime) {
         console.log(`Reached end time (${endTime}s), stopping recorder`);
-        mediaRecorder.stop();
+        try {
+          mediaRecorder.stop();
+        } catch (e) {
+          console.error('Error stopping recorder:', e);
+        }
         sourceVideo.pause();
         return;
       }
@@ -426,28 +499,21 @@ export async function standardTrimVideo(
         console.error('Error drawing frame:', e);
       }
 
-      // Log progress occasionally
-      if (frameCount % 30 === 0) {
-        console.log(
-          `Processed ${frameCount} frames, current time: ${sourceVideo.currentTime.toFixed(2)}s`
-        );
-      }
-
-      // Continue capturing frames
+      // Request next frame
       requestAnimationFrame(captureFrames);
     };
 
-    // Start the process by seeking to slightly before start time
-    const seekTime = Math.max(0, startTime - 0.1);
-    console.log('Seeking to start time with buffer:', seekTime);
-    sourceVideo.currentTime = seekTime;
+    // Start the process by seeking to start time
+    console.log(`Seeking to start time: ${startTime}`);
+    sourceVideo.currentTime = startTime;
 
     // Once seeked, start playing and capturing frames
-    sourceVideo.onseeked = () => {
+    const onSeeked = () => {
+      sourceVideo.removeEventListener('seeked', onSeeked);
       console.log('Seeked to start time, starting playback');
 
-      // Slow down playback for more precise frame capture
-      sourceVideo.playbackRate = 0.8;
+      // Use normal playback rate for more reliable capture
+      sourceVideo.playbackRate = 1.0;
 
       sourceVideo
         .play()
@@ -457,37 +523,17 @@ export async function standardTrimVideo(
         })
         .catch((err) => {
           console.error('Error playing video for frame capture:', err);
+          try {
+            mediaRecorder.stop();
+          } catch (e) {
+            console.error('Error stopping recorder after play failure:', e);
+          }
+          clearTimeout(safetyTimeout);
           reject(new Error('Failed to play video for frame capture'));
         });
     };
 
-    // Set a safety timeout
-    const safetyTimeout = setTimeout(() => {
-      if (mediaRecorder.state !== 'inactive') {
-        console.warn('Trim operation taking too long, forcing completion');
-        mediaRecorder.stop();
-      }
-    }, 30000); // 30-second safety timeout
-
-    // Clean up the timeout when recording stops
-    mediaRecorder.onstop = () => {
-      clearTimeout(safetyTimeout);
-      console.log(`MediaRecorder stopped, processed ${frameCount} frames`);
-
-      try {
-        if (chunks.length === 0) {
-          throw new Error('No data was collected during trimming');
-        }
-
-        const trimmedBlob = new Blob(chunks, { type: mimeType });
-        console.log(`Created trimmed blob: ${trimmedBlob.size} bytes`);
-
-        resolve(trimmedBlob);
-      } catch (error) {
-        console.error('Error creating final video:', error);
-        reject(error);
-      }
-    };
+    sourceVideo.addEventListener('seeked', onSeeked);
   });
 }
 
@@ -542,19 +588,28 @@ async function tryAlternativeSafariApproach(
  * Helper function to find the best supported video format
  * @returns The most suitable MIME type for video recording
  */
-export const getSupportedMimeType = (): string => {
-  const types = ['video/mp4;codecs=h264', 'video/mp4', 'video/quicktime'];
+function getSupportedMimeType(): string {
+  // Android-friendly MIME types, in order of preference
+  const mimeTypes = [
+    'video/webm;codecs=vp8',
+    'video/webm',
+    'video/webm;codecs=vp9',
+    'video/mp4',
+    'video/mp4;codecs=h264',
+  ];
 
-  for (const type of types) {
+  for (const type of mimeTypes) {
     if (MediaRecorder.isTypeSupported(type)) {
-      console.log('Using MIME type:', type);
+      console.log(`Browser supports MIME type: ${type}`);
       return type;
     }
   }
 
-  // Fallback to basic mp4
-  return 'video/mp4';
-};
+  console.warn(
+    'No preferred MIME types supported, falling back to browser default'
+  );
+  return ''; // Let the browser choose
+}
 
 /**
  * Prepares a video element for playback with a blob

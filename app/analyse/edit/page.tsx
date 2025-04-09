@@ -636,8 +636,12 @@ function EditPage() {
       // Wait for video metadata to load
       await new Promise((resolve, reject) => {
         sourceVideo.onloadedmetadata = resolve;
-        sourceVideo.onerror = reject;
-        setTimeout(resolve, 3000); // Timeout after 3 seconds
+        sourceVideo.onerror = (e) => {
+          console.error('Error loading video for trimming:', e);
+          reject(new Error('Failed to load video for trimming'));
+        };
+        // Set a timeout in case it never fires
+        setTimeout(() => resolve(null), 3000);
       });
 
       // Create a canvas with the same dimensions as the video
@@ -664,16 +668,40 @@ function EditPage() {
         return;
       }
 
-      // Call the standardTrimVideo function
-      const trimmedBlob = await standardTrimVideo(
-        sourceVideo,
-        canvas,
-        ctx,
-        startTime,
-        endTime
-      );
+      let trimmedBlob;
+      try {
+        // Call the standardTrimVideo function
+        trimmedBlob = await standardTrimVideo(
+          sourceVideo,
+          canvas,
+          ctx,
+          startTime,
+          endTime
+        );
 
-      updateProgress(30);
+        updateProgress(30);
+
+        console.log(
+          `Successfully got trimmed blob: ${trimmedBlob.size} bytes, type: ${trimmedBlob.type}`
+        );
+      } catch (trimError) {
+        console.error('Error in standardTrimVideo:', trimError);
+
+        // Fallback - try a simpler approach with frame capture
+        console.log('Trying alternative frame capture approach...');
+        trimmedBlob = await captureFramesAsVideo(
+          sourceVideo,
+          canvas,
+          ctx,
+          startTime,
+          endTime
+        );
+        updateProgress(30);
+      }
+
+      if (!trimmedBlob || trimmedBlob.size < 1000) {
+        throw new Error('Failed to create a valid trimmed video');
+      }
 
       console.log(
         'Original trimmed size:',
@@ -694,7 +722,9 @@ function EditPage() {
         await ffmpeg.load();
 
         // Write input file
-        const inputFileName = 'input.webm'; // Use .webm extension since it's more likely the original format
+        const inputFileName = trimmedBlob.type.includes('webm')
+          ? 'input.webm'
+          : 'input.mp4';
         const outputFileName = 'compressed.mp4';
         await ffmpeg.writeFile(inputFileName, await fetchFile(trimmedBlob));
 
@@ -708,18 +738,18 @@ function EditPage() {
           '-c:v',
           'libx264',
           '-profile:v',
-          'baseline', // Use baseline profile for maximum compatibility
+          'baseline', // Most compatible profile
           '-level',
-          '3.0',
+          '3.0', // Lower level for better compatibility
           '-pix_fmt',
           'yuv420p',
           '-crf',
-          '28',
+          '28', // Higher CRF = lower quality but smaller file
           '-preset',
           'fast',
           '-vf',
-          'scale=640:-2',
-          '-an',
+          'scale=640:-2', // Resize to smaller dimensions
+          '-an', // No audio
           outputFileName,
         ]);
 
@@ -769,15 +799,6 @@ function EditPage() {
         setUploadProgress(100);
         setUploadedVideoUrl(publicUrl);
 
-        // Store trim information for reference
-        const trimInfo = {
-          videoUrl: publicUrl,
-          fileName: fullPath,
-          startTime: 0, // Since we've already trimmed, the new video starts at 0
-          endTime: trimDuration,
-          duration: trimDuration,
-        };
-
         sessionStorage.setItem(
           'trimInfo',
           JSON.stringify({
@@ -806,6 +827,103 @@ function EditPage() {
       clearInterval(simulationInterval);
       setIsUploading(false);
     }
+  }
+
+  // Fallback function that captures frames without MediaRecorder
+  async function captureFramesAsVideo(
+    videoElement: HTMLVideoElement,
+    canvas: HTMLCanvasElement,
+    ctx: CanvasRenderingContext2D,
+    startTime: number,
+    endTime: number
+  ): Promise<Blob> {
+    console.log('Using fallback frame capture method');
+
+    // Set the video to the start time
+    videoElement.currentTime = startTime;
+
+    // Wait for the video to seek to the start time
+    await new Promise<void>((resolve) => {
+      const onSeeked = () => {
+        videoElement.removeEventListener('seeked', onSeeked);
+        resolve();
+      };
+      videoElement.addEventListener('seeked', onSeeked);
+    });
+
+    // Import FFmpeg directly here for the fallback
+    const { FFmpeg } = await import('@ffmpeg/ffmpeg');
+    const { fetchFile } = await import('@ffmpeg/util');
+
+    // Create FFmpeg instance
+    const ffmpeg = new FFmpeg();
+    await ffmpeg.load();
+
+    // Calculate number of frames to capture (assume 30fps)
+    const duration = endTime - startTime;
+    const fps = 30;
+    const frameCount = Math.ceil(duration * fps);
+
+    console.log(`Capturing ${frameCount} frames at ${fps} fps`);
+
+    // Create directory for frames
+    await ffmpeg.createDir('frames');
+
+    // Start capturing frames
+    for (let i = 0; i < frameCount; i++) {
+      const currentTime = startTime + i / fps;
+
+      // Set video position
+      videoElement.currentTime = currentTime;
+
+      // Wait for the seek to complete
+      await new Promise<void>((resolve) => {
+        const onSeeked = () => {
+          videoElement.removeEventListener('seeked', onSeeked);
+          resolve();
+        };
+        videoElement.addEventListener('seeked', onSeeked);
+      });
+
+      // Draw the frame
+      ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+
+      // Get the frame as a blob
+      const frameDataUrl = canvas.toDataURL('image/jpeg', 0.9);
+      const frameBlob = await (await fetch(frameDataUrl)).blob();
+
+      // Write frame to FFmpeg
+      const frameData = await fetchFile(frameBlob);
+      const paddedIndex = i.toString().padStart(4, '0');
+      await ffmpeg.writeFile(`frames/frame${paddedIndex}.jpg`, frameData);
+
+      if (i % 10 === 0) {
+        console.log(`Captured frame ${i}/${frameCount}`);
+      }
+    }
+
+    // Create video from frames
+    await ffmpeg.exec([
+      '-framerate',
+      fps.toString(),
+      '-i',
+      'frames/frame%04d.jpg',
+      '-c:v',
+      'libx264',
+      '-profile:v',
+      'baseline',
+      '-level',
+      '3.0',
+      '-pix_fmt',
+      'yuv420p',
+      '-crf',
+      '23',
+      'output.mp4',
+    ]);
+
+    // Read the output video
+    const data = await ffmpeg.readFile('output.mp4');
+    return new Blob([data], { type: 'video/mp4' });
   }
 
   // Add a function to fix the standardTrimVideo function for better compatibility
