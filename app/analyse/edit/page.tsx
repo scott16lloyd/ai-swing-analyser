@@ -31,6 +31,10 @@ function EditPage() {
   const containerRef = useRef<HTMLDivElement>(null);
   const router = useRouter();
 
+  const isAndroidDevice = useCallback(() => {
+    return /android/i.test(navigator.userAgent);
+  }, []);
+
   // Debug log for mobile
   const mobileLog = useCallback((message: string) => {
     console.log(message);
@@ -670,14 +674,28 @@ function EditPage() {
 
       let trimmedBlob;
       try {
-        // Call the standardTrimVideo function
-        trimmedBlob = await standardTrimVideo(
-          sourceVideo,
-          canvas,
-          ctx,
-          startTime,
-          endTime
-        );
+        // Try the standardTrimVideo function first - but with a flag for Android
+        const isAndroid = /android/i.test(navigator.userAgent);
+
+        if (isAndroid) {
+          console.log('Android detected, using frame capture method directly');
+          // Skip MediaRecorder completely on Android
+          trimmedBlob = await captureFramesAsVideo(
+            sourceVideo,
+            canvas,
+            ctx,
+            startTime,
+            endTime
+          );
+        } else {
+          trimmedBlob = await standardTrimVideo(
+            sourceVideo,
+            canvas,
+            ctx,
+            startTime,
+            endTime
+          );
+        }
 
         updateProgress(30);
 
@@ -839,91 +857,135 @@ function EditPage() {
   ): Promise<Blob> {
     console.log('Using fallback frame capture method');
 
-    // Set the video to the start time
-    videoElement.currentTime = startTime;
+    try {
+      // Set the video to the start time
+      videoElement.currentTime = startTime;
 
-    // Wait for the video to seek to the start time
-    await new Promise<void>((resolve) => {
-      const onSeeked = () => {
-        videoElement.removeEventListener('seeked', onSeeked);
-        resolve();
-      };
-      videoElement.addEventListener('seeked', onSeeked);
-    });
-
-    // Import FFmpeg directly here for the fallback
-    const { FFmpeg } = await import('@ffmpeg/ffmpeg');
-    const { fetchFile } = await import('@ffmpeg/util');
-
-    // Create FFmpeg instance
-    const ffmpeg = new FFmpeg();
-    await ffmpeg.load();
-
-    // Calculate number of frames to capture (assume 30fps)
-    const duration = endTime - startTime;
-    const fps = 30;
-    const frameCount = Math.ceil(duration * fps);
-
-    console.log(`Capturing ${frameCount} frames at ${fps} fps`);
-
-    // Create directory for frames
-    await ffmpeg.createDir('frames');
-
-    // Start capturing frames
-    for (let i = 0; i < frameCount; i++) {
-      const currentTime = startTime + i / fps;
-
-      // Set video position
-      videoElement.currentTime = currentTime;
-
-      // Wait for the seek to complete
+      // Wait for the video to seek to the start time
       await new Promise<void>((resolve) => {
         const onSeeked = () => {
           videoElement.removeEventListener('seeked', onSeeked);
           resolve();
         };
         videoElement.addEventListener('seeked', onSeeked);
+
+        // Add timeout in case event never fires
+        setTimeout(() => {
+          videoElement.removeEventListener('seeked', onSeeked);
+          console.log('Seek timeout, continuing anyway');
+          resolve();
+        }, 5000);
       });
 
-      // Draw the frame
-      ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+      // Import FFmpeg directly here for the fallback
+      const { FFmpeg } = await import('@ffmpeg/ffmpeg');
+      const { fetchFile } = await import('@ffmpeg/util');
 
-      // Get the frame as a blob
-      const frameDataUrl = canvas.toDataURL('image/jpeg', 0.9);
-      const frameBlob = await (await fetch(frameDataUrl)).blob();
+      // Create FFmpeg instance
+      const ffmpeg = new FFmpeg();
+      await ffmpeg.load();
 
-      // Write frame to FFmpeg
-      const frameData = await fetchFile(frameBlob);
-      const paddedIndex = i.toString().padStart(4, '0');
-      await ffmpeg.writeFile(`frames/frame${paddedIndex}.jpg`, frameData);
+      // Calculate number of frames to capture (assume 30fps)
+      const duration = endTime - startTime;
+      const fps = 30;
+      const frameCount = Math.ceil(duration * fps);
 
-      if (i % 10 === 0) {
-        console.log(`Captured frame ${i}/${frameCount}`);
+      console.log(`Capturing ${frameCount} frames at ${fps} fps`);
+
+      // Create directory for frames
+      await ffmpeg.createDir('frames');
+
+      // Start capturing frames
+      let capturedFrames = 0;
+      const framesPerProgress = Math.max(1, Math.floor(frameCount / 10)); // For progress updates
+
+      // Start capturing frames
+      for (let i = 0; i < frameCount; i++) {
+        const currentTime = startTime + i / fps;
+
+        // Set video position
+        videoElement.currentTime = currentTime;
+
+        // Wait for the seek to complete
+        await new Promise<void>((resolve) => {
+          const onSeeked = () => {
+            videoElement.removeEventListener('seeked', onSeeked);
+            resolve();
+          };
+          videoElement.addEventListener('seeked', onSeeked);
+
+          // Timeout for cases where seeked event doesn't fire
+          setTimeout(() => {
+            videoElement.removeEventListener('seeked', onSeeked);
+            resolve();
+          }, 500);
+        });
+
+        try {
+          // Draw the frame
+          ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+
+          // Get the frame as a blob
+          const frameDataUrl = canvas.toDataURL('image/jpeg', 0.7);
+          const frameBlob = await (await fetch(frameDataUrl)).blob();
+
+          // Write frame to FFmpeg
+          const frameData = await fetchFile(frameBlob);
+          const paddedIndex = i.toString().padStart(4, '0');
+          await ffmpeg.writeFile(`frames/frame${paddedIndex}.jpg`, frameData);
+
+          capturedFrames++;
+
+          // Log progress occasionally
+          if (i % framesPerProgress === 0 || i === frameCount - 1) {
+            console.log(`Captured frame ${i + 1}/${frameCount}`);
+          }
+        } catch (error) {
+          console.error(`Error capturing frame ${i}:`, error);
+        }
       }
+
+      console.log(`Successfully captured ${capturedFrames} frames`);
+
+      if (capturedFrames === 0) {
+        throw new Error('Failed to capture any frames');
+      }
+
+      console.log('Creating video from frames...');
+
+      // Create video from frames
+      await ffmpeg.exec([
+        '-framerate',
+        fps.toString(),
+        '-i',
+        'frames/frame%04d.jpg',
+        '-c:v',
+        'libx264',
+        '-profile:v',
+        'baseline',
+        '-level',
+        '3.0',
+        '-pix_fmt',
+        'yuv420p',
+        '-crf',
+        '28', // Higher value = lower quality but smaller size
+        '-preset',
+        'veryfast', // Faster encoding
+        '-movflags',
+        '+faststart', // For web streaming
+        'output.mp4',
+      ]);
+
+      console.log('Video creation complete, reading output file');
+
+      // Read the output video
+      const data = await ffmpeg.readFile('output.mp4');
+      console.log(`Output video size: ${data.length} bytes`);
+      return new Blob([data], { type: 'video/mp4' });
+    } catch (error) {
+      console.error('Error in captureFramesAsVideo:', error);
+      throw error;
     }
-
-    // Create video from frames
-    await ffmpeg.exec([
-      '-framerate',
-      fps.toString(),
-      '-i',
-      'frames/frame%04d.jpg',
-      '-c:v',
-      'libx264',
-      '-profile:v',
-      'baseline',
-      '-level',
-      '3.0',
-      '-pix_fmt',
-      'yuv420p',
-      '-crf',
-      '23',
-      'output.mp4',
-    ]);
-
-    // Read the output video
-    const data = await ffmpeg.readFile('output.mp4');
-    return new Blob([data], { type: 'video/mp4' });
   }
 
   // Add a function to fix the standardTrimVideo function for better compatibility

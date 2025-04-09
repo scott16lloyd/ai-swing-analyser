@@ -588,14 +588,12 @@ async function tryAlternativeSafariApproach(
  * Helper function to find the best supported video format
  * @returns The most suitable MIME type for video recording
  */
-function getSupportedMimeType(): string {
+export function getSupportedMimeType(): string {
   // Android-friendly MIME types, in order of preference
   const mimeTypes = [
     'video/webm;codecs=vp8',
     'video/webm',
     'video/webm;codecs=vp9',
-    'video/mp4',
-    'video/mp4;codecs=h264',
   ];
 
   for (const type of mimeTypes) {
