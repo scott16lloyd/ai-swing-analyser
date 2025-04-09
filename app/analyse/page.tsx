@@ -14,13 +14,16 @@ function AnalysePage() {
   const isProcessingRef = useRef(false);
   const [cameraReady, setCameraReady] = useState(false);
 
-  // Function to determine supported MIME type
+  // Function to determine supported MIME type - prioritize WebM over MP4
+  // since WebM has better compatibility across browsers
   const getSupportedMimeType = useCallback(() => {
+    // WebM format is more widely supported for playback
     const mimeTypes = [
       'video/webm',
       'video/webm;codecs=vp8',
       'video/webm;codecs=vp9',
       'video/webm;codecs=h264',
+      // Only try MP4 if WebM is not available
       'video/mp4',
       'video/mp4;codecs=h264',
       'video/x-matroska',
@@ -92,11 +95,8 @@ function AnalysePage() {
         console.log('Using browser default MIME type');
       }
 
-      // Try to adjust bitrate for better compatibility
-      if (options.mimeType && options.mimeType.includes('webm')) {
-        // Lower bitrate for better compatibility
-        (options as any).videoBitsPerSecond = 2500000; // 2.5 Mbps
-      }
+      // Use a lower bitrate for better compatibility - especially for Android
+      (options as any).videoBitsPerSecond = 1000000; // 1 Mbps
 
       // Create recorder
       const recorder = new MediaRecorder(stream, options);
@@ -129,7 +129,7 @@ function AnalysePage() {
         }, 300);
       };
 
-      // Start with a smaller timeslice for Android
+      // Start with a smaller timeslice for Android - more frequent chunks
       recorder.start(200);
       console.log('MediaRecorder started');
 
@@ -259,10 +259,14 @@ function AnalysePage() {
 
       if (blob.size < 1000) {
         console.warn('Blob is very small, might be invalid');
-        // Continue anyway - some devices create valid but small recordings
+        alert(
+          'Recording is too short. Please try again and record for longer.'
+        );
+        resetProcessing();
+        return;
       }
 
-      // Store in IndexedDB
+      // Store video data and navigate
       storeVideoAndNavigate(blob, type);
     } catch (err) {
       console.error('Error processing video:', err);
@@ -274,6 +278,43 @@ function AnalysePage() {
   // Store video and navigate
   const storeVideoAndNavigate = useCallback(
     (blob: Blob, type: string) => {
+      console.log(`Storing video: size=${blob.size}, type=${type}`);
+
+      // Debug: Check if video is playable
+      const debugVideo = () => {
+        try {
+          const videoURL = URL.createObjectURL(blob);
+          const video = document.createElement('video');
+          video.style.display = 'none';
+          document.body.appendChild(video);
+
+          // Log video metadata when loaded
+          video.onloadedmetadata = () => {
+            console.log(
+              `Video metadata loaded - Duration: ${video.duration}s, Size: ${video.videoWidth}x${video.videoHeight}`
+            );
+            document.body.removeChild(video);
+          };
+
+          // Log playback errors
+          video.onerror = (e) => {
+            console.error('Video playback error during debug check:', e);
+            document.body.removeChild(video);
+          };
+
+          video.src = videoURL;
+          video.load();
+        } catch (e) {
+          console.error('Error checking video playability:', e);
+        }
+      };
+
+      // Try to debug the video first
+      debugVideo();
+
+      // Ensure we're always using a format that works for storage/playback
+      const storageType = type.includes('webm') ? type : 'video/webm';
+
       // Store the blob in IndexedDB
       const request = indexedDB.open('VideoDatabase', 1);
 
@@ -290,13 +331,22 @@ function AnalysePage() {
         const store = transaction.objectStore('videos');
 
         // Store the video with ID 'currentVideo'
-        store.put({ id: 'currentVideo', blob: blob, type: type });
+        const videoData = {
+          id: 'currentVideo',
+          blob: blob,
+          type: storageType,
+          timestamp: new Date().toISOString(),
+          size: blob.size,
+        };
+
+        store.put(videoData);
 
         transaction.oncomplete = () => {
           // Save metadata in session storage
-          sessionStorage.setItem('videoMimeType', type);
+          sessionStorage.setItem('videoMimeType', storageType);
           sessionStorage.setItem('needsRefresh', 'true');
           sessionStorage.setItem('videoStored', 'true');
+          sessionStorage.setItem('videoSize', blob.size.toString());
 
           console.log('Video stored successfully, navigating to edit page');
           router.push('/analyse/edit');
@@ -306,12 +356,14 @@ function AnalysePage() {
       request.onerror = (event) => {
         console.error('IndexedDB error:', event);
 
-        // Try alternative storage method
+        // Try alternative storage method - as base64 data URI
         try {
           const reader = new FileReader();
           reader.onload = () => {
             const dataUri = reader.result as string;
             sessionStorage.setItem('recordedVideo', dataUri);
+            sessionStorage.setItem('videoMimeType', storageType);
+            console.log('Video stored as data URI');
             router.push('/analyse/edit');
           };
           reader.readAsDataURL(blob);
@@ -405,7 +457,7 @@ function AnalysePage() {
     }
 
     return () => {};
-  }, [capturing, handleStopCaptureClick, getMinRecordingTime]);
+  }, [capturing, handleStopCaptureClick]);
 
   // Cleanup on unmount
   useEffect(() => {
