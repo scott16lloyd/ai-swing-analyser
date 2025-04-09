@@ -1,10 +1,16 @@
 'use client';
 
 import React, { useEffect, useState, useCallback } from 'react';
-import { checkProcessedVideoStatus } from '@/app/actions/storage';
+import {
+  checkProcessedVideoStatus,
+  analyseGolfSwingLandmarks,
+} from '@/app/actions/storage';
 import { Button } from '@/components/ui/button';
 import { useRouter } from 'next/navigation';
 import { Activity } from 'lucide-react';
+import { X } from 'lucide-react';
+import { Check } from 'lucide-react';
+import { GraduationCap } from 'lucide-react';
 
 // Type definitions
 interface ProcessedVideoResult {
@@ -22,6 +28,13 @@ interface TrimInfo {
   duration: number;
 }
 
+interface SwingAnalysisResult {
+  prediction: string;
+  confidence: number;
+  feedback: string[];
+  error?: string;
+}
+
 function AnalysisResults(): React.ReactElement {
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [processedVideo, setProcessedVideo] =
@@ -35,6 +48,10 @@ function AnalysisResults(): React.ReactElement {
   const [showDebugger, setShowDebugger] = useState<boolean>(false);
   const [originalVideo, setOriginalVideo] = useState<string | null>(null);
   const router = useRouter();
+  const [swingAnalysisResults, setSwingAnalysisResults] =
+    useState<SwingAnalysisResult | null>(null);
+  const [isAnalysing, setIsAnalysing] = useState(false);
+  const [resultsReady, setResultsReady] = useState(false);
 
   // Debug log function
   const debugLog = useCallback((message: string): void => {
@@ -99,6 +116,15 @@ function AnalysisResults(): React.ReactElement {
     },
     [debugLog]
   );
+
+  // Effect to check if both video and analysis are ready
+  useEffect(() => {
+    if (processedVideo && swingAnalysisResults && !isAnalysing) {
+      debugLog('Both video and analysis results are ready');
+      setResultsReady(true);
+      setIsLoading(false);
+    }
+  }, [processedVideo, swingAnalysisResults, isAnalysing, debugLog]);
 
   useEffect(() => {
     // Get the trim info from sessionStorage
@@ -165,6 +191,37 @@ function AnalysisResults(): React.ReactElement {
           debugLog('Processed video found!');
           if (pollInterval) clearInterval(pollInterval);
           setProcessedVideo(result);
+
+          // Construct the landmarks filename
+          const landmarksFileName = `landmarks/user/${baseName}_landmarks.json`;
+          debugLog(`Looking for landmarks file: ${landmarksFileName}`);
+
+          // Run analysis
+          setIsAnalysing(true);
+          try {
+            const analysisResult = await analyseGolfSwingLandmarks({
+              fileName: landmarksFileName,
+            });
+
+            debugLog(`Analysis result: ${JSON.stringify(analysisResult)}`);
+
+            if (analysisResult.error) {
+              debugLog(`Analysis error: ${analysisResult.error}`);
+              setIsLoading(false);
+            } else {
+              setSwingAnalysisResults(analysisResult);
+            }
+          } catch (analysisError) {
+            if (analysisError instanceof Error) {
+              debugLog(`Error during analysis: ${analysisError.message}`);
+            } else {
+              debugLog('Error during analysis: An unknown error occurred.');
+            }
+          } finally {
+            setIsAnalysing(false);
+            setIsLoading(false);
+          }
+
           setIsLoading(false);
         } else if (result.error) {
           debugLog(`Error in poll: ${result.error}`);
@@ -232,7 +289,7 @@ function AnalysisResults(): React.ReactElement {
   }, [router, debugLog]);
 
   return (
-    <div className="fixed inset-0 flex flex-col bg-black overflow-hidden bg-opacity-95 text-white">
+    <div className="fixed inset-0 flex flex-col bg-black bg-opacity-95 text-white overflow-y-auto">
       <div className="flex-1 flex flex-col items-center justify-center p-4">
         <h1 className="text-2xl font-bold mb-6 flex items-center">
           <Activity className="mr-2" />
@@ -276,30 +333,92 @@ function AnalysisResults(): React.ReactElement {
           </div>
         )}
 
-        {processedVideo && processedVideo.publicUrl && (
-          <div className="text-center">
-            <div className="bg-green-950 border border-green-400 text-green-300 px-4 py-3 rounded mb-4 max-w-md">
-              <p>Your swing analysis is ready!</p>
-            </div>
+        {resultsReady &&
+          processedVideo &&
+          processedVideo.publicUrl &&
+          swingAnalysisResults && (
+            <div className="text-center">
+              <div className="bg-green-950 border border-green-400 text-green-300 px-4 py-3 rounded mb-4 max-w-md">
+                <p>Your swing analysis is ready!</p>
+              </div>
 
-            <div className="my-6">
-              <video
-                src={processedVideo.publicUrl}
-                controls
-                className="w-full max-w-md rounded-lg shadow-lg"
-                autoPlay
-                playsInline
-                loop
-              />
-            </div>
+              <div className="my-6">
+                <video
+                  src={processedVideo.publicUrl}
+                  controls
+                  className="w-full max-w-md rounded-lg shadow-lg"
+                  autoPlay
+                  playsInline
+                  loop
+                />
+              </div>
 
-            <div className="mt-6 flex gap-4 justify-center">
-              <Button onClick={handleBackToCapture} className="text-md p-5">
-                Record Another Swing
-              </Button>
+              {/* Swing analysis results */}
+              <div className="mt-4 text-left bg-gray-900 p-4 rounded-lg max-w-md mx-auto">
+                <div className="flex justify-between items-center mb-2">
+                  <h3 className="text-xl font-bold">Swing Analysis</h3>
+                  <div
+                    className={`px-3 py-1 rounded-full ${swingAnalysisResults.prediction === 'good' ? 'bg-green-900 text-green-200' : 'bg-amber-900 text-amber-200'}`}
+                  >
+                    {swingAnalysisResults.prediction === 'good'
+                      ? 'Good Swing'
+                      : 'Needs Work'}
+                  </div>
+                </div>
+
+                <div className="space-y-2 mt-4">
+                  {swingAnalysisResults.feedback.map((item, index) => (
+                    <p
+                      key={index}
+                      className={`${item.includes('DRILL SUGGESTIONS') ? 'font-bold mt-4' : ''}`}
+                    >
+                      {/* Analysis header and DRILL SUGGESTIONS header have no icon */}
+                      {item.includes("Here's a detailed analysis") ||
+                      item.includes('DRILL SUGGESTIONS') ? (
+                        item
+                      ) : /* Drill suggestions get GraduationCap icon */
+                      item.startsWith('Focus on') ||
+                        item.startsWith('Initiate') ||
+                        item.startsWith('Practice') ? (
+                        <>
+                          <GraduationCap
+                            className="inline-block mr-2"
+                            size={16}
+                            color="#3b82f6"
+                          />
+                          {item}
+                        </>
+                      ) : (
+                        /* Swing issues get Check/X icons */
+                        <>
+                          {swingAnalysisResults.prediction === 'good' ? (
+                            <Check
+                              className="inline-block mr-2"
+                              size={16}
+                              color="#00ff11"
+                            />
+                          ) : (
+                            <X
+                              className="inline-block mr-2"
+                              size={16}
+                              color="#ff0000"
+                            />
+                          )}
+                          {item}
+                        </>
+                      )}
+                    </p>
+                  ))}
+                </div>
+              </div>
+
+              <div className="mt-6 flex gap-4 justify-center">
+                <Button onClick={handleBackToCapture} className="text-md p-5">
+                  Record Another Swing
+                </Button>
+              </div>
             </div>
-          </div>
-        )}
+          )}
       </div>
 
       {/* Debug panel */}

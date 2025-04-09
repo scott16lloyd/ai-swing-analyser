@@ -63,6 +63,17 @@ interface DiagnosticResult {
   }[];
 }
 
+interface LandmarksRequest {
+  fileName: string;
+}
+
+interface SwingAnalysisResult {
+  prediction: string;
+  confidence: number;
+  feedback: string[];
+  error?: string;
+}
+
 /**
  * Generate a signed URL for direct upload to Google Cloud Storage (simplified)
  */
@@ -626,6 +637,131 @@ export async function uploadVideoToGCS(
       fileName: fullPath,
       publicUrl: '',
       error: (error as Error).message,
+    };
+  }
+}
+
+/**
+ * Fetches landmarks JSON file from storage and analyzes the golf swing
+ */
+export async function analyseGolfSwingLandmarks({
+  fileName,
+}: LandmarksRequest): Promise<SwingAnalysisResult> {
+  if (!fileName) {
+    return {
+      prediction: 'error',
+      confidence: 0,
+      feedback: ['File name is required'],
+      error: 'File name is required',
+    };
+  }
+
+  const bucketName = process.env.STORAGE_BUCKET_NAME;
+  if (!bucketName) {
+    return {
+      prediction: 'error',
+      confidence: 0,
+      feedback: ['Storage bucket name not configured'],
+      error: 'Storage bucket name not configured',
+    };
+  }
+
+  try {
+    // Get service account credentials from environment variable
+    const serviceKeyEnv = process.env.GOOGLE_CLOUD_SERVICE_KEY;
+    if (!serviceKeyEnv) {
+      return {
+        prediction: 'error',
+        confidence: 0,
+        feedback: ['Google Cloud service account key not configured'],
+        error: 'Google Cloud service account key not configured',
+      };
+    }
+
+    // Parse the service account credentials
+    let credentials;
+    try {
+      credentials = JSON.parse(serviceKeyEnv);
+    } catch (e) {
+      return {
+        prediction: 'error',
+        confidence: 0,
+        feedback: ['Invalid Google Cloud service account key format'],
+        error: 'Invalid Google Cloud service account key format',
+      };
+    }
+
+    // Initialize Google Cloud Storage with credentials
+    const storage = new Storage({
+      credentials,
+      projectId: credentials.project_id,
+    });
+
+    console.log('Fetching landmarks file:', fileName);
+
+    // Get the file from storage
+    const bucket = storage.bucket(bucketName);
+    const file = bucket.file(fileName);
+
+    // Check if file exists
+    const [exists] = await file.exists();
+    if (!exists) {
+      return {
+        prediction: 'error',
+        confidence: 0,
+        feedback: [`Landmarks file not found: ${fileName}`],
+        error: `Landmarks file not found: ${fileName}`,
+      };
+    }
+
+    console.log('Landmarks data fetched, sending to inference service');
+
+    // Send to Cloud Run for inference
+    const cloudRunUrl = process.env.GOLF_INFERENCE_URL;
+    if (!cloudRunUrl) {
+      return {
+        prediction: 'error',
+        confidence: 0,
+        feedback: ['Golf inference service URL not configured'],
+        error: 'Golf inference service URL not configured',
+      };
+    }
+
+    // Call inference service
+    const response = await fetch(cloudRunUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        gcs_path: `gs://${bucketName}/${fileName}`,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      return {
+        prediction: 'error',
+        confidence: 0,
+        feedback: [
+          `Inference service error: ${response.status} ${response.statusText}`,
+        ],
+        error: `Inference service error: ${errorText}`,
+      };
+    }
+
+    // Parse the inference results
+    const analysisResult = await response.json();
+    // Revalidate the results page to ensure fresh data
+    revalidatePath('/analyse/results');
+    return analysisResult;
+  } catch (error) {
+    console.error('Error analyzing golf swing:', error);
+    return {
+      prediction: 'error',
+      confidence: 0,
+      feedback: [`Failed to analyze golf swing: ${(error as Error).message}`],
+      error: `Failed to analyze golf swing: ${(error as Error).message}`,
     };
   }
 }
