@@ -901,7 +901,7 @@ function EditPage() {
         );
 
         // Redirect to results page
-        router.push('/analyse/results');
+        // router.push('/analyse/results');
       } catch (ffmpegError) {
         console.error('Error during FFmpeg processing:', ffmpegError);
         if (ffmpegError instanceof Error) {
