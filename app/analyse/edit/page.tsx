@@ -453,8 +453,7 @@ function EditPage() {
     }
   }, [startTime]);
 
-  // Upload trimmed video to GCS
-  async function uploadTrimmedVideo() {
+  async function uploadTrimmedVideo(): Promise<void> {
     // Reset states
     setIsUploading(true);
     setUploadProgress(0);
@@ -462,9 +461,9 @@ function EditPage() {
     setUploadedVideoUrl(null);
 
     // Track progress outside React state to avoid conflicts
-    let lastProgress = 0;
+    let lastProgress: number = 0;
 
-    // Function to safely update progress (never go backwards)
+    // Function to safely update progress
     const updateProgress = (newProgress: number): void => {
       if (newProgress > lastProgress) {
         lastProgress = newProgress;
@@ -473,19 +472,15 @@ function EditPage() {
     };
 
     // Create smooth progress simulation
-    const simulationInterval = setInterval(() => {
+    const simulationInterval: NodeJS.Timeout = setInterval(() => {
       // Different acceleration rates for different phases
       if (lastProgress < 30) {
-        // Preparing phase - move a bit faster
         updateProgress(lastProgress + 0.3);
       } else if (lastProgress < 70) {
-        // Compression phase - move slower
         updateProgress(lastProgress + 0.15);
       } else if (lastProgress < 90) {
-        // Upload phase - move very slowly
         updateProgress(lastProgress + 0.1);
       } else if (lastProgress < 98) {
-        // Final phase - barely move
         updateProgress(lastProgress + 0.05);
       }
     }, 200);
@@ -497,19 +492,31 @@ function EditPage() {
       }
 
       // 2. Set up video and canvas for processing
-      const sourceVideo = document.createElement('video');
+      const sourceVideo: HTMLVideoElement = document.createElement('video');
       sourceVideo.src = videoSrc;
       sourceVideo.muted = true;
 
       // Wait for video metadata to load
-      await new Promise((resolve, reject) => {
-        sourceVideo.onloadedmetadata = resolve;
-        sourceVideo.onerror = reject;
-        setTimeout(resolve, 3000); // Timeout after 3 seconds
+      await new Promise<void>((resolve, reject) => {
+        sourceVideo.onloadedmetadata = () => resolve();
+        sourceVideo.onerror = (e) => reject(e);
+        setTimeout(() => resolve(), 3000); // Timeout after 3 seconds
       });
 
-      // Create a canvas with the same dimensions as the video
-      const canvas = document.createElement('canvas');
+      // Log device info - important for debugging
+      const isIOS: boolean =
+        /iPad|iPhone|iPod/.test(navigator.userAgent) &&
+        !(
+          navigator.userAgent.includes('Windows') ||
+          navigator.userAgent.includes('Android')
+        );
+      const isSafari: boolean = /^((?!chrome|android).)*safari/i.test(
+        navigator.userAgent
+      );
+      mobileLog(`Device detection - iOS: ${isIOS}, Safari: ${isSafari}`);
+
+      // Create a canvas with dimensions matching the video
+      const canvas: HTMLCanvasElement = document.createElement('canvas');
       canvas.width = sourceVideo.videoWidth || 640;
       canvas.height = sourceVideo.videoHeight || 480;
       const ctx = canvas.getContext('2d');
@@ -518,21 +525,38 @@ function EditPage() {
         throw new Error('Could not create canvas context');
       }
 
-      // 3. Perform the trimming operation
+      // 3. Check duration constraint
       console.log(`Starting trim operation from ${startTime}s to ${endTime}s`);
-
-      // Progress update during trimming
-      const trimDuration = endTime - startTime;
+      const trimDuration: number = endTime - startTime;
       if (trimDuration > 8) {
         setUploadError(
           'Video must be less than 8 seconds for analysis, please trim the video shorter.'
         );
         setIsUploading(false);
+        clearInterval(simulationInterval);
         return;
       }
 
-      // Call the standardTrimVideo function
-      const trimmedBlob = await standardTrimVideo(
+      // Import necessary utilities
+      // Using dynamic imports with TypeScript
+      interface VideoUtils {
+        standardTrimVideo: (
+          sourceVideo: HTMLVideoElement,
+          canvas: HTMLCanvasElement,
+          ctx: CanvasRenderingContext2D,
+          startTime: number,
+          endTime: number
+        ) => Promise<Blob>;
+        compressIOSVideo: (videoBlob: Blob) => Promise<Blob>;
+      }
+
+      const { standardTrimVideo, compressIOSVideo } = (await import(
+        '@/lib/videoUtils'
+      )) as VideoUtils;
+
+      // 4. Perform the trimming operation
+      mobileLog('Starting video trim process');
+      const trimmedBlob: Blob = await standardTrimVideo(
         sourceVideo,
         canvas,
         ctx,
@@ -541,47 +565,85 @@ function EditPage() {
       );
 
       updateProgress(30);
+      mobileLog(`Original size: ${trimmedBlob.size / (1024 * 1024)} MB`);
 
-      // Compress the trimmed video before upload
-      console.log('Original size:', trimmedBlob.size / (1024 * 1024), 'MB');
+      // 5. Compress the video (with iOS-specific handling if needed)
+      let compressedBlob: Blob;
 
-      // Import ffmpeg only when needed (dynamic import)
-      const { FFmpeg } = await import('@ffmpeg/ffmpeg');
-      const { fetchFile } = await import('@ffmpeg/util');
+      if (isIOS && isSafari) {
+        mobileLog('Using iOS-specific compression');
+        compressedBlob = await compressIOSVideo(trimmedBlob);
+      } else {
+        // TypeScript interfaces for FFmpeg imports
+        interface FFmpeg {
+          load(): Promise<void>;
+          writeFile(name: string, data: Uint8Array): Promise<void>;
+          readFile(name: string): Promise<Uint8Array>;
+          exec(args: string[]): Promise<void>;
+        }
 
-      // Create FFmpeg instance
-      const ffmpeg = new FFmpeg();
-      await ffmpeg.load();
+        interface FFmpegModule {
+          FFmpeg: { new (): FFmpeg };
+        }
 
-      // Write input file
-      const inputFileName = 'input.mp4';
-      const outputFileName = 'compressed.mp4';
-      await ffmpeg.writeFile(inputFileName, await fetchFile(trimmedBlob));
+        interface FetchFileModule {
+          fetchFile(blob: Blob): Promise<Uint8Array>;
+        }
 
-      updateProgress(40);
+        // Import FFmpeg only when needed
+        const { FFmpeg } = (await import(
+          '@ffmpeg/ffmpeg'
+        )) as unknown as FFmpegModule;
+        const { fetchFile } = (await import(
+          '@ffmpeg/util'
+        )) as unknown as FetchFileModule;
 
-      // Set compression parameters - adjust these for quality vs size
-      await ffmpeg.exec([
-        '-i',
-        inputFileName,
-        '-c:v',
-        'libx264',
-        '-crf',
-        '28', // Higher value = more compression, lower quality
-        '-preset',
-        'fast',
-        '-vf',
-        'scale=640:-2', // Resize to 640px width
-        '-an', // Remove audio
-        outputFileName,
-      ]);
+        // Create FFmpeg instance
+        const ffmpeg = new FFmpeg();
+        await ffmpeg.load();
 
-      updateProgress(70);
+        // Write input file
+        const inputFileName: string = 'input.mp4';
+        const outputFileName: string = 'compressed.mp4';
+        await ffmpeg.writeFile(inputFileName, await fetchFile(trimmedBlob));
 
-      const timestamp = Date.now();
-      const fullPath = `unprocessed_video/user/trim-${timestamp}.mp4`;
+        updateProgress(40);
 
-      const { url, publicUrl } = await generateSignedUrl({
+        // Standard compression parameters for non-iOS
+        await ffmpeg.exec([
+          '-i',
+          inputFileName,
+          '-c:v',
+          'libx264',
+          '-crf',
+          '28',
+          '-preset',
+          'fast',
+          '-vf',
+          'scale=640:-2',
+          '-an', // Remove audio
+          outputFileName,
+        ]);
+
+        updateProgress(70);
+
+        // Read the compressed file
+        const data: Uint8Array = await ffmpeg.readFile(outputFileName);
+        compressedBlob = new Blob([data], { type: 'video/mp4' });
+      }
+
+      mobileLog(`Compressed size: ${compressedBlob.size / (1024 * 1024)} MB`);
+
+      // 6. Generate upload URL and metadata
+      interface SignedUrlResponse {
+        url: string;
+        publicUrl: string;
+      }
+
+      const timestamp: number = Date.now();
+      const fullPath: string = `unprocessed_video/user/trim-${timestamp}.mp4`;
+
+      const { url, publicUrl }: SignedUrlResponse = await generateSignedUrl({
         filename: fullPath,
         contentType: 'video/mp4',
         metadata: {
@@ -591,22 +653,15 @@ function EditPage() {
           trimmed: 'true',
           width: canvas.width.toString(),
           height: canvas.height.toString(),
+          isIOS: isIOS.toString(),
+          isSafari: isSafari.toString(),
         },
       });
 
-      // Read the compressed file
-      const data = await ffmpeg.readFile(outputFileName);
-      const compressedBlob = new Blob([data], { type: 'video/mp4' });
-      console.log(
-        'Compressed size:',
-        compressedBlob.size / (1024 * 1024),
-        'MB'
-      );
-
       updateProgress(80);
 
-      // 6. Upload the trimmed video to GCS using signed URL
-      const uploadResponse = await fetch(url, {
+      // 7. Upload the trimmed and compressed video
+      const uploadResponse: Response = await fetch(url, {
         method: 'PUT',
         headers: { 'Content-Type': 'video/mp4' },
         body: compressedBlob,
@@ -623,30 +678,30 @@ function EditPage() {
       setUploadedVideoUrl(publicUrl);
 
       // Store trim information for reference
-      const trimInfo = {
+      interface TrimInfo {
+        videoUrl: string;
+        fileName: string;
+        startTime: number;
+        endTime: number;
+        duration: number;
+      }
+
+      const trimInfo: TrimInfo = {
         videoUrl: publicUrl,
         fileName: fullPath,
-        startTime: 0, // Since we've already trimmed, the new video starts at 0
+        startTime: 0,
         endTime: trimDuration,
         duration: trimDuration,
       };
 
-      sessionStorage.setItem(
-        'trimInfo',
-        JSON.stringify({
-          videoUrl: publicUrl,
-          fileName: fullPath,
-          startTime: 0,
-          endTime: endTime - startTime,
-          duration: endTime - startTime,
-        })
-      );
+      sessionStorage.setItem('trimInfo', JSON.stringify(trimInfo));
 
       // Redirect to results page
       router.push('/analyse/results');
     } catch (error) {
       console.error('Error creating or uploading trimmed video:', error);
       setUploadError((error as Error).message);
+      mobileLog(`Error: ${(error as Error).message}`);
     } finally {
       clearInterval(simulationInterval);
       setIsUploading(false);

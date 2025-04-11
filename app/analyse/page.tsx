@@ -13,68 +13,112 @@ function AnalysePage() {
   const [elapsedTime, setElapsedTime] = useState(0);
   const router = useRouter();
 
-  const handleStartCaptureClick = useCallback(() => {
-    setCapturing(true);
-    if (webcamRef.current && webcamRef.current.stream) {
-      const mimeType = getSupportedMimeType();
-      mediaRecorderRef.current = new MediaRecorder(webcamRef.current.stream, {
-        mimeType: mimeType,
-      });
-
-      mediaRecorderRef.current?.addEventListener(
-        'dataavailable',
-        handleDataAvailable
-      );
-      mediaRecorderRef.current.start();
-    }
-  }, [webcamRef, setCapturing, mediaRecorderRef]);
-
+  /**
+   * Handles video data chunks as they become available
+   */
   const handleDataAvailable = useCallback(
-    ({ data }: { data: Blob }) => {
-      console.log('Data available, size:', data.size);
+    ({ data }: BlobEvent) => {
+      console.log(
+        `Data available, size: ${data.size} bytes, type: ${data.type}`
+      );
+
       if (data.size > 0) {
+        // Check if this is the first chunk (for iOS diagnosis)
+        const isFirstChunk = recordedChunks.length === 0;
+        if (isFirstChunk) {
+          console.log('First data chunk received:', data.type);
+        }
+
         setRecordedChunks((prev) => prev.concat(data));
 
         // Check if capturing is stopped
         if (!capturing) {
           console.log('Creating blob and navigating');
 
-          // Create new blob, convert to data URI and navigate to edit page
-          const blob = new Blob([data], { type: data.type });
+          // Make sure we can detect iOS Safari using TypeScript-safe methods
+          const isIOS: boolean =
+            /iPad|iPhone|iPod/.test(navigator.userAgent) &&
+            !(
+              navigator.userAgent.includes('Windows') ||
+              navigator.userAgent.includes('Android')
+            );
+          const isSafari: boolean = /^((?!chrome|android).)*safari/i.test(
+            navigator.userAgent
+          );
+          // const isIOSSafari: boolean = isIOS && isSafari;
+
+          // Create new blob with the correct type
+          // For iOS, explicitly use mp4 container
+          const blobType: string = isIOS ? 'video/mp4' : data.type;
+          const blob = new Blob([data], { type: blobType });
+          console.log(
+            `Created final blob, size: ${blob.size / 1024} KB, type: ${blobType}`
+          );
+
+          // Define IndexedDB related types
+          interface IDBVideoData {
+            id: string;
+            blob: Blob;
+            type: string;
+            isIOS: boolean;
+            isSafari: boolean;
+            timestamp: number;
+          }
 
           // Store the blob in IndexedDB
-          const request = indexedDB.open('VideoDatabase', 1);
+          const request: IDBOpenDBRequest = indexedDB.open('VideoDatabase', 1);
 
-          request.onupgradeneeded = (event) => {
-            const db = (event.target as IDBOpenDBRequest).result;
+          request.onupgradeneeded = (event: IDBVersionChangeEvent) => {
+            const db: IDBDatabase = (event.target as IDBOpenDBRequest).result;
             if (!db.objectStoreNames.contains('videos')) {
               db.createObjectStore('videos', { keyPath: 'id' });
             }
           };
 
-          request.onsuccess = (event) => {
-            const db = (event.target as IDBOpenDBRequest).result;
-            const transaction = db.transaction(['videos'], 'readwrite');
-            const store = transaction.objectStore('videos');
+          request.onsuccess = (event: Event) => {
+            const db: IDBDatabase = (event.target as IDBOpenDBRequest).result;
+            const transaction: IDBTransaction = db.transaction(
+              ['videos'],
+              'readwrite'
+            );
+            const store: IDBObjectStore = transaction.objectStore('videos');
 
-            // Store the video with ID 'currentVideo'
-            store.put({ id: 'currentVideo', blob: blob, type: data.type });
+            // Store both the video and device information
+            const videoData: IDBVideoData = {
+              id: 'currentVideo',
+              blob: blob,
+              type: blobType,
+              isIOS: isIOS,
+              isSafari: isSafari,
+              timestamp: Date.now(),
+            };
+
+            store.put(videoData);
 
             transaction.oncomplete = () => {
-              sessionStorage.setItem('videoMimeType', data.type);
+              sessionStorage.setItem('videoMimeType', blobType);
               sessionStorage.setItem('needsRefresh', 'true');
-              sessionStorage.setItem('videoStored', 'true'); // Flag to indicate video is in IndexedDB
-              router.push('/analyse/edit');
+              sessionStorage.setItem('videoStored', 'true');
+
+              // Add a small delay for iOS before navigation
+              if (isIOS) {
+                console.log('Adding iOS delay before navigation');
+                setTimeout(() => {
+                  router.push('/analyse/edit');
+                }, 500);
+              } else {
+                router.push('/analyse/edit');
+              }
             };
           };
 
-          request.onerror = (event) => {
+          request.onerror = (event: Event) => {
             console.error('IndexedDB error:', event);
             // Fallback for very small videos
             try {
               const reader = new FileReader();
-              reader.onload = () => {
-                const dataUri = reader.result as string;
+              reader.onload = (e: ProgressEvent<FileReader>) => {
+                const dataUri = e.target?.result as string;
                 sessionStorage.setItem('recordedVideo', dataUri);
                 router.push('/analyse/edit');
               };
@@ -86,9 +130,91 @@ function AnalysePage() {
         }
       }
     },
-    [setRecordedChunks, capturing, router]
+    [setRecordedChunks, capturing, router, recordedChunks.length]
   );
 
+  /**
+   * Handles starting video capture with browser-specific optimizations
+   */
+  const handleStartCaptureClick = useCallback(() => {
+    setCapturing(true);
+    if (webcamRef.current && webcamRef.current.stream) {
+      // Get device info
+      const isIOS: boolean =
+        /iPad|iPhone|iPod/.test(navigator.userAgent) &&
+        !(
+          navigator.userAgent.includes('Windows') ||
+          navigator.userAgent.includes('Android')
+        );
+      const isSafari: boolean = /^((?!chrome|android).)*safari/i.test(
+        navigator.userAgent
+      );
+
+      console.log(
+        `Starting capture - Device: iOS: ${isIOS}, Safari: ${isSafari}`
+      );
+
+      // Import and use the improved functions
+      try {
+        // Dynamic import with TypeScript
+        import('@/lib/videoUtils')
+          .then(({ getSupportedMimeType, createMediaRecorder }) => {
+            const mimeType = getSupportedMimeType();
+
+            // Make sure we still have the stream when imports finish
+            if (!webcamRef.current || !webcamRef.current.stream) {
+              console.error('Stream no longer available');
+              setCapturing(false);
+              return;
+            }
+
+            // Use the enhanced MediaRecorder creation function
+            mediaRecorderRef.current = createMediaRecorder(
+              webcamRef.current.stream,
+              mimeType
+            );
+
+            if (mediaRecorderRef.current) {
+              mediaRecorderRef.current.addEventListener(
+                'dataavailable',
+                handleDataAvailable
+              );
+
+              // For iOS Safari, request data more frequently to avoid buffer issues
+              if (isIOS && isSafari) {
+                console.log('Using iOS-optimized recording settings');
+                mediaRecorderRef.current.start(1000); // Get data every second
+              } else {
+                mediaRecorderRef.current.start();
+              }
+
+              // Log that recording has started successfully
+              console.log(
+                'Recording started successfully with MIME type:',
+                mimeType
+              );
+            } else {
+              console.error('Failed to create MediaRecorder');
+              setCapturing(false);
+            }
+          })
+          .catch((err) => {
+            console.error('Error importing video utilities:', err);
+            setCapturing(false);
+          });
+      } catch (err) {
+        console.error('Error starting recording:', err);
+        setCapturing(false);
+      }
+    } else {
+      console.error('Webcam stream not available');
+      setCapturing(false);
+    }
+  }, [webcamRef, setCapturing, mediaRecorderRef, handleDataAvailable]);
+
+  /**
+   * Handles stopping the video capture process
+   */
   const handleStopCaptureClick = useCallback(() => {
     console.log('Stop button clicked');
     if (mediaRecorderRef.current) {

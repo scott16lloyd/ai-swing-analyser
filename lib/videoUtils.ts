@@ -351,7 +351,13 @@ async function mobileTrimVideoHighQuality(
 }
 
 /**
- * Standard approach for desktop browsers
+ * Trims a video by rendering frames to a canvas and recording
+ * @param sourceVideo The video element to trim
+ * @param canvas The canvas to draw frames on
+ * @param ctx The canvas 2D context
+ * @param startTime The start time in seconds
+ * @param endTime The end time in seconds
+ * @returns A promise resolving to a Blob containing the trimmed video
  */
 export async function standardTrimVideo(
   sourceVideo: HTMLVideoElement,
@@ -360,135 +366,274 @@ export async function standardTrimVideo(
   startTime: number,
   endTime: number
 ): Promise<Blob> {
-  console.log('Using standard trim approach');
+  console.log(`Starting trim operation from ${startTime}s to ${endTime}s`);
 
-  // Get high quality MIME type
-  const mimeType = getHighQualityMimeType();
+  // Make sure we can detect iOS Safari using TypeScript-safe methods
+  const isIOS: boolean =
+    /iPad|iPhone|iPod/.test(navigator.userAgent) &&
+    !(
+      navigator.userAgent.includes('Windows') ||
+      navigator.userAgent.includes('Android')
+    );
+  const isSafari: boolean = /^((?!chrome|android).)*safari/i.test(
+    navigator.userAgent
+  );
+  const isIOSSafari: boolean = isIOS && isSafari;
 
-  // Create a stream from the canvas
-  // @ts-ignore
-  // INCREASED FPS for better capture
-  const canvasStream = canvas.captureStream(60); // Increased to 60 FPS
+  console.log(`Device detection - iOS: ${isIOS}, Safari: ${isSafari}`);
 
-  // Set up high quality MediaRecorder
-  const mediaRecorder = new MediaRecorder(canvasStream, {
-    mimeType: mimeType,
-    videoBitsPerSecond: 8000000, // Increased to 8Mbps for high quality
+  // Special handling for iOS Safari
+  if (isIOSSafari) {
+    console.log('Using iOS Safari optimized trimming approach');
+    return await iosSafariTrimVideo(
+      sourceVideo,
+      canvas,
+      ctx,
+      startTime,
+      endTime
+    );
+  }
+
+  // Standard approach for other browsers
+  return await standardBrowserTrimVideo(
+    sourceVideo,
+    canvas,
+    ctx,
+    startTime,
+    endTime
+  );
+}
+
+/**
+ * iOS Safari specific implementation for video trimming
+ */
+async function iosSafariTrimVideo(
+  sourceVideo: HTMLVideoElement,
+  canvas: HTMLCanvasElement,
+  ctx: CanvasRenderingContext2D,
+  startTime: number,
+  endTime: number
+): Promise<Blob> {
+  // 1. Set up variables
+  const framerate: number = 30; // iOS Safari typically records at 30fps
+  const duration: number = endTime - startTime;
+  const totalFrames: number = Math.ceil(duration * framerate);
+
+  console.log(
+    `iOS trim: ${duration}s at ${framerate}fps = ${totalFrames} frames`
+  );
+
+  // 2. Create MediaRecorder with iOS compatible settings
+  const stream: MediaStream = canvas.captureStream(framerate);
+  const recorder: MediaRecorder = new MediaRecorder(stream, {
+    mimeType: 'video/mp4;codecs=h264', // Explicitly use H.264 if supported
+    videoBitsPerSecond: 2500000, // 2.5 Mbps is good for mobile
   });
 
   const chunks: Blob[] = [];
-  let frameCount = 0;
+  recorder.ondataavailable = (e: BlobEvent) => {
+    if (e.data.size > 0) {
+      chunks.push(e.data);
+    }
+  };
 
-  // Return a promise that resolves with the trimmed blob
-  return new Promise<Blob>((resolve, reject) => {
-    mediaRecorder.ondataavailable = (e) => {
-      if (e.data.size > 0) {
-        chunks.push(e.data);
-      }
-    };
-
-    mediaRecorder.onstop = () => {
-      console.log(`MediaRecorder stopped, processed ${frameCount} frames`);
-
-      try {
-        if (chunks.length === 0) {
-          throw new Error('No data was collected during trimming');
-        }
-
-        const trimmedBlob = new Blob(chunks, { type: mimeType });
-        console.log(`Created trimmed blob: ${trimmedBlob.size} bytes`);
-
-        resolve(trimmedBlob);
-      } catch (error) {
-        console.error('Error creating final video:', error);
-        reject(error);
-      }
-    };
-
-    // Start the MediaRecorder with more frequent chunks
-    mediaRecorder.start(50); // More frequent chunks for better quality
-
-    // Function to draw frames
-    const captureFrames = () => {
-      // Stop when we reach the end time with a small buffer to ensure we don't cut off too early
-      if (sourceVideo.currentTime >= endTime + 0.2) {
-        console.log(`Reached end time (${endTime}s), stopping recorder`);
-        mediaRecorder.stop();
-        sourceVideo.pause();
-        return;
-      }
-
-      // Draw frame to canvas
-      try {
-        ctx.drawImage(sourceVideo, 0, 0, canvas.width, canvas.height);
-        frameCount++;
-      } catch (e) {
-        console.error('Error drawing frame:', e);
-      }
-
-      // Log progress occasionally
-      if (frameCount % 30 === 0) {
-        console.log(
-          `Processed ${frameCount} frames, current time: ${sourceVideo.currentTime.toFixed(2)}s`
-        );
-      }
-
-      // Continue capturing frames
-      requestAnimationFrame(captureFrames);
-    };
-
-    // Start the process by seeking to slightly before start time
-    const seekTime = Math.max(0, startTime - 0.1);
-    console.log('Seeking to start time with buffer:', seekTime);
-    sourceVideo.currentTime = seekTime;
-
-    // Once seeked, start playing and capturing frames
-    sourceVideo.onseeked = () => {
-      console.log('Seeked to start time, starting playback');
-
-      // Slow down playback for more precise frame capture
-      sourceVideo.playbackRate = 0.8;
-
-      sourceVideo
-        .play()
-        .then(() => {
-          console.log('Playback started for frame capture');
-          requestAnimationFrame(captureFrames);
-        })
-        .catch((err) => {
-          console.error('Error playing video for frame capture:', err);
-          reject(new Error('Failed to play video for frame capture'));
-        });
-    };
-
-    // Set a safety timeout
-    const safetyTimeout = setTimeout(() => {
-      if (mediaRecorder.state !== 'inactive') {
-        console.warn('Trim operation taking too long, forcing completion');
-        mediaRecorder.stop();
-      }
-    }, 30000); // 30-second safety timeout
-
-    // Clean up the timeout when recording stops
-    mediaRecorder.onstop = () => {
-      clearTimeout(safetyTimeout);
-      console.log(`MediaRecorder stopped, processed ${frameCount} frames`);
-
-      try {
-        if (chunks.length === 0) {
-          throw new Error('No data was collected during trimming');
-        }
-
-        const trimmedBlob = new Blob(chunks, { type: mimeType });
-        console.log(`Created trimmed blob: ${trimmedBlob.size} bytes`);
-
-        resolve(trimmedBlob);
-      } catch (error) {
-        console.error('Error creating final video:', error);
-        reject(error);
-      }
+  // 3. Set up promise to wait for recording completion
+  const recordingPromise: Promise<Blob> = new Promise((resolve) => {
+    recorder.onstop = () => {
+      const blob = new Blob(chunks, { type: 'video/mp4' });
+      console.log(`iOS trimmed video size: ${blob.size / 1024} KB`);
+      resolve(blob);
     };
   });
+
+  // 4. Start recording from the canvas
+  recorder.start();
+
+  // 5. Seek to start position and wait for it to be ready
+  sourceVideo.currentTime = startTime;
+  await new Promise<void>((resolve) => {
+    sourceVideo.onseeked = () => resolve();
+  });
+
+  // 6. Draw frames at regular intervals to create the trimmed video
+  const frameInterval: number = 1000 / framerate; // ms between frames
+  let currentTime: number = startTime;
+
+  // Use requestAnimationFrame for smoother rendering
+  const drawFrame = async (): Promise<void> => {
+    if (currentTime <= endTime) {
+      // Draw the current frame
+      ctx.drawImage(sourceVideo, 0, 0, canvas.width, canvas.height);
+
+      // Move to next frame
+      currentTime += 1 / framerate;
+      sourceVideo.currentTime = currentTime;
+
+      // Wait for seeking to complete
+      await new Promise<void>((resolve) => {
+        sourceVideo.onseeked = () => resolve();
+      });
+
+      // Continue drawing
+      requestAnimationFrame(drawFrame);
+    } else {
+      // Done with all frames, stop recording
+      setTimeout(() => {
+        recorder.stop();
+      }, 100); // Small delay to ensure last frame is captured
+    }
+  };
+
+  // Start the frame drawing process
+  drawFrame();
+
+  // 7. Wait for recording to complete and return the blob
+  return recordingPromise;
+}
+
+/**
+ * Standard implementation for other browsers
+ */
+async function standardBrowserTrimVideo(
+  sourceVideo: HTMLVideoElement,
+  canvas: HTMLCanvasElement,
+  ctx: CanvasRenderingContext2D,
+  startTime: number,
+  endTime: number
+): Promise<Blob> {
+  // Create a recording stream from the canvas
+  const stream: MediaStream = canvas.captureStream();
+  const recorder: MediaRecorder = new MediaRecorder(stream, {
+    mimeType: 'video/webm;codecs=vp9', // Better for non-iOS browsers
+    videoBitsPerSecond: 5000000,
+  });
+
+  const chunks: Blob[] = [];
+  recorder.ondataavailable = (e: BlobEvent) => {
+    if (e.data.size > 0) {
+      chunks.push(e.data);
+    }
+  };
+
+  const recordingPromise: Promise<Blob> = new Promise((resolve) => {
+    recorder.onstop = () => {
+      const blob = new Blob(chunks, { type: 'video/webm' });
+      resolve(blob);
+    };
+  });
+
+  recorder.start();
+
+  // Draw frames from start to end time
+  sourceVideo.currentTime = startTime;
+  await new Promise<void>((resolve) => {
+    sourceVideo.onseeked = () => resolve();
+  });
+
+  const interval = setInterval(() => {
+    if (sourceVideo.currentTime < endTime) {
+      ctx.drawImage(sourceVideo, 0, 0, canvas.width, canvas.height);
+      sourceVideo.currentTime += 0.1; // Advance by 100ms
+    } else {
+      clearInterval(interval);
+      setTimeout(() => recorder.stop(), 100);
+    }
+  }, 100);
+
+  return recordingPromise;
+}
+
+// For TypeScript support of FFmpeg import
+interface FFmpeg {
+  load(): Promise<void>;
+  writeFile(name: string, data: Uint8Array): Promise<void>;
+  readFile(name: string): Promise<Uint8Array>;
+  exec(args: string[]): Promise<void>;
+}
+
+interface FFmpegModule {
+  FFmpeg: { new (): FFmpeg };
+}
+
+interface FetchFileModule {
+  fetchFile(blob: Blob): Promise<Uint8Array>;
+}
+
+/**
+ * Simplified FFmpeg compression specifically for iOS Safari videos
+ */
+export async function compressIOSVideo(videoBlob: Blob): Promise<Blob> {
+  // Only import FFmpeg when needed
+  const { FFmpeg } = (await import(
+    '@ffmpeg/ffmpeg'
+  )) as unknown as FFmpegModule;
+  const { fetchFile } = (await import(
+    '@ffmpeg/util'
+  )) as unknown as FetchFileModule;
+
+  // Create FFmpeg instance
+  const ffmpeg = new FFmpeg();
+  await ffmpeg.load();
+
+  // Write input file
+  const inputFileName = 'input.mp4';
+  const outputFileName = 'compressed.mp4';
+  await ffmpeg.writeFile(inputFileName, await fetchFile(videoBlob));
+
+  // Use iOS-friendly compression settings
+  // Less aggressive compression for iOS to preserve compatibility
+  await ffmpeg.exec([
+    '-i',
+    inputFileName,
+    '-c:v',
+    'libx264',
+    '-crf',
+    '23', // Less compression (lower number = higher quality)
+    '-preset',
+    'veryfast',
+    '-pix_fmt',
+    'yuv420p', // Required for iOS compatibility
+    '-profile:v',
+    'baseline', // More compatible with iOS
+    '-level',
+    '3.0', // Compatibility level
+    '-movflags',
+    '+faststart', // Optimize for web playback
+    '-an', // Remove audio
+    outputFileName,
+  ]);
+
+  // Read the compressed file
+  const data = await ffmpeg.readFile(outputFileName);
+  return new Blob([data], { type: 'video/mp4' });
+}
+
+/**
+ * Detects if the current browser is running on iOS
+ * Using a TypeScript-safe implementation
+ */
+export function isIOSDevice(): boolean {
+  const userAgent = navigator.userAgent;
+  return (
+    /iPad|iPhone|iPod/.test(userAgent) &&
+    // Safe check that doesn't use MSStream
+    !(userAgent.includes('Windows') || userAgent.includes('Android'))
+  );
+}
+
+/**
+ * Detects if the current browser is Safari
+ */
+export function isSafariBrowser(): boolean {
+  const userAgent = navigator.userAgent;
+  return /^((?!chrome|android).)*safari/i.test(userAgent);
+}
+
+/**
+ * Detects if the current browser is iOS Safari
+ */
+export function isIOSSafari(): boolean {
+  return isIOSDevice() && isSafariBrowser();
 }
 
 /**
@@ -539,22 +684,106 @@ async function tryAlternativeSafariApproach(
 }
 
 /**
- * Helper function to find the best supported video format
- * @returns The most suitable MIME type for video recording
+ * Gets the most appropriate MIME type for the current browser environment
+ * @returns The supported MIME type string
  */
-export const getSupportedMimeType = (): string => {
-  const types = ['video/mp4;codecs=h264', 'video/mp4', 'video/quicktime'];
+export function getSupportedMimeType(): string {
+  const types: string[] = [
+    'video/mp4; codecs=h264',
+    'video/webm; codecs=h264',
+    'video/webm; codecs=vp9',
+    'video/webm; codecs=vp8',
+    'video/webm',
+    'video/mp4',
+  ];
 
+  // Log device info for debugging - TypeScript-safe detection
+  const isIOS: boolean =
+    /iPad|iPhone|iPod/.test(navigator.userAgent) &&
+    !(
+      navigator.userAgent.includes('Windows') ||
+      navigator.userAgent.includes('Android')
+    );
+  const isSafari: boolean = /^((?!chrome|android).)*safari/i.test(
+    navigator.userAgent
+  );
+  console.log(
+    `Device detection in getSupportedMimeType - iOS: ${isIOS}, Safari: ${isSafari}`
+  );
+
+  // Check each MIME type and log which one we're using
   for (const type of types) {
-    if (MediaRecorder.isTypeSupported(type)) {
-      console.log('Using MIME type:', type);
-      return type;
+    try {
+      if (MediaRecorder.isTypeSupported(type)) {
+        console.log(`Selected MIME type: ${type}`);
+        return type;
+      }
+    } catch (e) {
+      console.warn(`Error checking support for ${type}:`, e);
     }
   }
 
-  // Fallback to basic mp4
-  return 'video/mp4';
-};
+  // Default fallback if nothing is explicitly supported
+  console.warn('No specified MIME type is supported, using default');
+  return ''; // Let the browser choose
+}
+
+/**
+ * Creates a MediaRecorder with appropriate options for the current environment
+ * @param stream The MediaStream to record
+ * @param mimeType The MIME type to use
+ * @returns A configured MediaRecorder instance
+ */
+export function createMediaRecorder(
+  stream: MediaStream,
+  mimeType?: string
+): MediaRecorder {
+  console.log(`Creating MediaRecorder with type: ${mimeType}`);
+
+  try {
+    // For iOS Safari, we need to be more careful with options
+    const isIOS: boolean =
+      /iPad|iPhone|iPod/.test(navigator.userAgent) &&
+      !(
+        navigator.userAgent.includes('Windows') ||
+        navigator.userAgent.includes('Android')
+      );
+
+    const options: MediaRecorderOptions = {};
+
+    if (mimeType) {
+      options.mimeType = mimeType;
+    }
+
+    // iOS Safari often works better with lower bitrates
+    if (isIOS) {
+      options.videoBitsPerSecond = 2500000; // 2.5 Mbps
+    } else {
+      options.videoBitsPerSecond = 5000000; // 5 Mbps
+    }
+
+    console.log('MediaRecorder options:', JSON.stringify(options));
+
+    const recorder = new MediaRecorder(stream, options);
+
+    // Add error handler for debugging
+    recorder.onerror = (event: Event) => {
+      console.error('MediaRecorder error:', event);
+      console.error('MediaRecorder error message:', event);
+    };
+
+    return recorder;
+  } catch (err) {
+    console.error(
+      'Failed to create MediaRecorder with the specified options:',
+      err
+    );
+
+    // Fallback with no options
+    console.log('Trying to create MediaRecorder with no options');
+    return new MediaRecorder(stream);
+  }
+}
 
 /**
  * Prepares a video element for playback with a blob
