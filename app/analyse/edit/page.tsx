@@ -31,6 +31,10 @@ function EditPage() {
   const containerRef = useRef<HTMLDivElement>(null);
   const router = useRouter();
 
+  const isAndroidDevice = useCallback(() => {
+    return /android/i.test(navigator.userAgent);
+  }, []);
+
   // Debug log for mobile
   const mobileLog = useCallback((message: string) => {
     console.log(message);
@@ -48,6 +52,35 @@ function EditPage() {
       // Force a page refresh
       window.location.reload();
     }
+  }, []);
+
+  useEffect(() => {
+    // Function to collect logs from videoUtils
+    const collectVideoUtilsLogs = () => {
+      if (typeof window !== 'undefined' && window.videoUtilsLogs) {
+        // Add these logs to your mobileDebugLogs state
+        setMobileDebugLogs((prevLogs) => {
+          // Get any new logs that aren't already in mobileDebugLogs
+          const existingLogSet = new Set(prevLogs);
+          const newLogs = window.videoUtilsLogs.filter(
+            (log) => !existingLogSet.has(log)
+          );
+
+          if (newLogs.length === 0) {
+            return prevLogs; // No new logs, don't update state
+          }
+
+          // Combine with existing logs and limit to keep UI performant
+          return [...newLogs, ...prevLogs].slice(0, 50);
+        });
+      }
+    };
+
+    // Set interval to collect logs periodically
+    const interval = setInterval(collectVideoUtilsLogs, 1000);
+
+    // Clean up interval on unmount
+    return () => clearInterval(interval);
   }, []);
 
   useEffect(() => {
@@ -122,10 +155,24 @@ function EditPage() {
 
         getRequest.onsuccess = () => {
           if (getRequest.result) {
-            const blob = getRequest.result.blob;
-            const url = URL.createObjectURL(blob);
-            setVideoSrc(url);
-            mobileLog('Set video source from IndexedDB');
+            const videoData = getRequest.result;
+            const blob = videoData.blob;
+
+            // Check if we need to convert the blob for playback
+            checkAndConvertBlob(blob, videoData.type)
+              .then((playableBlob) => {
+                const url = URL.createObjectURL(playableBlob);
+                setVideoSrc(url);
+                mobileLog(
+                  `Set video source from IndexedDB with type: ${videoData.type}`
+                );
+              })
+              .catch((error) => {
+                mobileLog(`Error converting blob: ${error}`);
+                // Try with original blob anyway
+                const url = URL.createObjectURL(blob);
+                setVideoSrc(url);
+              });
           } else {
             mobileLog('No video found in IndexedDB');
           }
@@ -157,10 +204,126 @@ function EditPage() {
     };
   }, []); // Empty dependency array - run once on mount
 
+  // Helper function to check and convert blob if needed
+  const checkAndConvertBlob = async (
+    originalBlob: Blob,
+    type: string
+  ): Promise<Blob> => {
+    return new Promise((resolve, reject) => {
+      mobileLog(`Checking blob: size=${originalBlob.size}, type=${type}`);
+
+      // For Android compatibility, ensure we have a valid MIME type
+      if (!type || type === 'application/octet-stream') {
+        // Try to detect from the Blob itself
+        type = originalBlob.type || 'video/webm';
+        mobileLog(`Updated type to: ${type}`);
+      }
+
+      // Create a new blob with the determined type to ensure proper metadata
+      const typedBlob = new Blob([originalBlob], { type });
+
+      // First, check if this blob is directly playable
+      const testVideo = document.createElement('video');
+      testVideo.muted = true;
+      const url = URL.createObjectURL(typedBlob);
+
+      // Set a timeout in case the loadedmetadata event doesn't fire
+      let timeoutId: number;
+
+      const cleanup = () => {
+        clearTimeout(timeoutId);
+        URL.revokeObjectURL(url);
+        testVideo.removeEventListener('loadedmetadata', handleLoadedMetadata);
+        testVideo.removeEventListener('error', handleError);
+      };
+
+      const handleLoadedMetadata = () => {
+        mobileLog('Video metadata loaded successfully, blob is playable');
+        cleanup();
+        resolve(typedBlob);
+      };
+
+      const handleError = (e: Event) => {
+        mobileLog(`Error loading video: ${e}`);
+        cleanup();
+
+        // Try with a fallback MIME type for Android
+        if (type !== 'video/webm;codecs=vp8') {
+          mobileLog('Trying with fallback MIME type: video/webm;codecs=vp8');
+          const fallbackBlob = new Blob([originalBlob], {
+            type: 'video/webm;codecs=vp8',
+          });
+          resolve(fallbackBlob);
+        } else {
+          // Just use the original as last resort
+          resolve(originalBlob);
+        }
+      };
+
+      // Set up timeout
+      timeoutId = window.setTimeout(() => {
+        mobileLog('Timeout waiting for video metadata, using original blob');
+        cleanup();
+        resolve(typedBlob);
+      }, 3000);
+
+      // Set up event listeners
+      testVideo.addEventListener('loadedmetadata', handleLoadedMetadata);
+      testVideo.addEventListener('error', handleError);
+      // Start loading the video
+      testVideo.src = url;
+      testVideo.load();
+    });
+  };
+
   // Second useEffect: Handle duration detection AFTER video source is set
   useEffect(() => {
     // Only run this effect if we have a video source
     if (!videoSrc) return;
+
+    if (videoRef.current) {
+      // Add onerror handler directly on the video element
+      videoRef.current.onerror = (e) => {
+        const error = ((e as Event).target as HTMLVideoElement).error;
+        mobileLog(`Video error: ${error?.code} - ${error?.message}`);
+
+        // If there's a MEDIA_ERR_SRC_NOT_SUPPORTED or MEDIA_ERR_DECODE error, try to recover
+        if (
+          error?.code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED ||
+          error?.code === MediaError.MEDIA_ERR_DECODE
+        ) {
+          mobileLog('Trying to recover from media error...');
+
+          // Get video from IndexedDB again and try with a different format
+          const request = indexedDB.open('VideoDatabase', 1);
+          request.onsuccess = (event) => {
+            const db = (event.target as IDBOpenDBRequest).result;
+            const transaction = db.transaction(['videos'], 'readonly');
+            const store = transaction.objectStore('videos');
+            const getRequest = store.get('currentVideo');
+
+            getRequest.onsuccess = () => {
+              if (getRequest.result) {
+                const videoData = getRequest.result;
+                const blob = videoData.blob;
+
+                // Try with explicit WebM format for Android
+                const recoveryBlob = new Blob([blob], {
+                  type: 'video/webm;codecs=vp8',
+                });
+                const recoveryUrl = URL.createObjectURL(recoveryBlob);
+
+                // Try to play with the new URL
+                if (videoRef.current) {
+                  videoRef.current.src = recoveryUrl;
+                  setVideoSrc(recoveryUrl);
+                }
+              }
+            };
+          };
+        }
+      };
+    }
 
     mobileLog(`Starting duration detection for video: ${videoSrc}`);
 
@@ -453,7 +616,20 @@ function EditPage() {
     }
   }, [startTime]);
 
-  async function uploadTrimmedVideo(): Promise<void> {
+  // Upload trimmed video to GCS
+  // Modified uploadTrimmedVideo function for EditPage.tsx
+
+  async function uploadTrimmedVideo() {
+    mobileLog(
+      `Starting upload process. Video source exists: ${!!videoSrc}, Start: ${startTime}s, End: ${endTime}s`
+    );
+    mobileLog(
+      `Video duration: ${videoDuration}s, Trim duration: ${endTime - startTime}s`
+    );
+    mobileLog(`User agent: ${navigator.userAgent}`);
+    mobileLog(
+      `Browser info: ${navigator.vendor}, isAndroid: ${isAndroidDevice()}, isSafari: ${/safari/i.test(navigator.userAgent) && !/chrome/i.test(navigator.userAgent)}`
+    );
     // Reset states
     setIsUploading(true);
     setUploadProgress(0);
@@ -461,9 +637,9 @@ function EditPage() {
     setUploadedVideoUrl(null);
 
     // Track progress outside React state to avoid conflicts
-    let lastProgress: number = 0;
+    let lastProgress = 0;
 
-    // Function to safely update progress
+    // Function to safely update progress (never go backwards)
     const updateProgress = (newProgress: number): void => {
       if (newProgress > lastProgress) {
         lastProgress = newProgress;
@@ -472,15 +648,19 @@ function EditPage() {
     };
 
     // Create smooth progress simulation
-    const simulationInterval: NodeJS.Timeout = setInterval(() => {
+    const simulationInterval = setInterval(() => {
       // Different acceleration rates for different phases
       if (lastProgress < 30) {
+        // Preparing phase - move a bit faster
         updateProgress(lastProgress + 0.3);
       } else if (lastProgress < 70) {
+        // Compression phase - move slower
         updateProgress(lastProgress + 0.15);
       } else if (lastProgress < 90) {
+        // Upload phase - move very slowly
         updateProgress(lastProgress + 0.1);
       } else if (lastProgress < 98) {
+        // Final phase - barely move
         updateProgress(lastProgress + 0.05);
       }
     }, 200);
@@ -491,43 +671,49 @@ function EditPage() {
         throw new Error('Video not available for trimming');
       }
 
+      mobileLog('Setting up source video element for trimming');
       // 2. Set up video and canvas for processing
-      const sourceVideo: HTMLVideoElement = document.createElement('video');
+      const sourceVideo = document.createElement('video');
       sourceVideo.src = videoSrc;
       sourceVideo.muted = true;
 
+      mobileLog(
+        `Source video metadata loaded. Width: ${sourceVideo.videoWidth}, Height: ${sourceVideo.videoHeight}, Duration: ${sourceVideo.duration}s`
+      );
+
       // Wait for video metadata to load
-      await new Promise<void>((resolve, reject) => {
-        sourceVideo.onloadedmetadata = () => resolve();
-        sourceVideo.onerror = (e) => reject(e);
-        setTimeout(() => resolve(), 3000); // Timeout after 3 seconds
+      await new Promise((resolve, reject) => {
+        sourceVideo.onloadedmetadata = resolve;
+        sourceVideo.onerror = (e) => {
+          console.error('Error loading video for trimming:', e);
+          reject(new Error('Failed to load video for trimming'));
+        };
+        // Set a timeout in case it never fires
+        setTimeout(() => resolve(null), 3000);
       });
 
-      // Log device info - important for debugging
-      const isIOS: boolean =
-        /iPad|iPhone|iPod/.test(navigator.userAgent) &&
-        !(
-          navigator.userAgent.includes('Windows') ||
-          navigator.userAgent.includes('Android')
-        );
-      const isSafari: boolean = /^((?!chrome|android).)*safari/i.test(
-        navigator.userAgent
+      mobileLog(
+        `Creating canvas with dimensions: intended width=${sourceVideo.videoWidth || 1280}, height=${sourceVideo.videoHeight || 720}`
       );
-      mobileLog(`Device detection - iOS: ${isIOS}, Safari: ${isSafari}`);
-
-      // Create a canvas with dimensions matching the video
-      const canvas: HTMLCanvasElement = document.createElement('canvas');
-      canvas.width = sourceVideo.videoWidth || 640;
-      canvas.height = sourceVideo.videoHeight || 480;
+      // Create a canvas with the same dimensions as the video
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(sourceVideo.videoWidth || 1280, 1280); // At least 1280px wide
+      canvas.height = Math.max(sourceVideo.videoHeight || 720, 720); // At least 720px high
       const ctx = canvas.getContext('2d');
+
+      mobileLog(
+        `Canvas created with dimensions: ${canvas.width}x${canvas.height}`
+      );
 
       if (!ctx) {
         throw new Error('Could not create canvas context');
       }
 
-      // 3. Check duration constraint
+      // 3. Perform the trimming operation
       console.log(`Starting trim operation from ${startTime}s to ${endTime}s`);
-      const trimDuration: number = endTime - startTime;
+
+      // Progress update during trimming
+      const trimDuration = endTime - startTime;
       if (trimDuration > 8) {
         setUploadError(
           'Video must be less than 8 seconds for analysis, please trim the video shorter.'
@@ -537,174 +723,450 @@ function EditPage() {
         return;
       }
 
-      // Import necessary utilities
-      // Using dynamic imports with TypeScript
-      interface VideoUtils {
-        standardTrimVideo: (
-          sourceVideo: HTMLVideoElement,
-          canvas: HTMLCanvasElement,
-          ctx: CanvasRenderingContext2D,
-          startTime: number,
-          endTime: number
-        ) => Promise<Blob>;
-        compressIOSVideo: (videoBlob: Blob) => Promise<Blob>;
+      let trimmedBlob;
+      try {
+        // Try the standardTrimVideo function first - but with a flag for Android
+        const isAndroid = /android/i.test(navigator.userAgent);
+
+        mobileLog(
+          `Starting trim operation with method: ${isAndroid ? 'Android frame capture' : 'standard trim'}`
+        );
+
+        if (isAndroid) {
+          console.log('Android detected, using frame capture method directly');
+          // Skip MediaRecorder completely on Android
+          trimmedBlob = await captureFramesAsVideo(
+            sourceVideo,
+            canvas,
+            ctx,
+            startTime,
+            endTime
+          );
+        } else {
+          trimmedBlob = await standardTrimVideo(
+            sourceVideo,
+            canvas,
+            ctx,
+            startTime,
+            endTime
+          );
+        }
+
+        updateProgress(30);
+
+        console.log(
+          `Successfully got trimmed blob: ${trimmedBlob.size} bytes, type: ${trimmedBlob.type}`
+        );
+      } catch (trimError) {
+        console.error('Error in standardTrimVideo:', trimError);
+
+        // Fallback - try a simpler approach with frame capture
+        console.log('Trying alternative frame capture approach...');
+        trimmedBlob = await captureFramesAsVideo(
+          sourceVideo,
+          canvas,
+          ctx,
+          startTime,
+          endTime
+        );
+        updateProgress(30);
+        mobileLog(
+          `Trimmed blob created: ${trimmedBlob.size} bytes, type: ${trimmedBlob.type}`
+        );
       }
 
-      const { standardTrimVideo, compressIOSVideo } = (await import(
-        '@/lib/videoUtils'
-      )) as VideoUtils;
+      if (!trimmedBlob || trimmedBlob.size < 1000) {
+        throw new Error('Failed to create a valid trimmed video');
+      }
 
-      // 4. Perform the trimming operation
-      mobileLog('Starting video trim process');
-      const trimmedBlob: Blob = await standardTrimVideo(
-        sourceVideo,
-        canvas,
-        ctx,
-        startTime,
-        endTime
+      console.log(
+        'Original trimmed size:',
+        trimmedBlob.size / (1024 * 1024),
+        'MB'
       );
 
-      updateProgress(30);
-      mobileLog(`Original size: ${trimmedBlob.size / (1024 * 1024)} MB`);
+      // Instead of using MediaRecorder for compression which fails on some Android devices,
+      // use FFmpeg directly without a second MediaRecorder step
 
-      // 5. Compress the video (with iOS-specific handling if needed)
-      let compressedBlob: Blob;
-
-      if (isIOS && isSafari) {
-        mobileLog('Using iOS-specific compression');
-        compressedBlob = await compressIOSVideo(trimmedBlob);
-      } else {
-        // TypeScript interfaces for FFmpeg imports
-        interface FFmpeg {
-          load(): Promise<void>;
-          writeFile(name: string, data: Uint8Array): Promise<void>;
-          readFile(name: string): Promise<Uint8Array>;
-          exec(args: string[]): Promise<void>;
-        }
-
-        interface FFmpegModule {
-          FFmpeg: { new (): FFmpeg };
-        }
-
-        interface FetchFileModule {
-          fetchFile(blob: Blob): Promise<Uint8Array>;
-        }
-
-        // Import FFmpeg only when needed
-        const { FFmpeg } = (await import(
-          '@ffmpeg/ffmpeg'
-        )) as unknown as FFmpegModule;
-        const { fetchFile } = (await import(
-          '@ffmpeg/util'
-        )) as unknown as FetchFileModule;
+      try {
+        // Import ffmpeg only when needed (dynamic import)
+        const { FFmpeg } = await import('@ffmpeg/ffmpeg');
+        const { fetchFile } = await import('@ffmpeg/util');
 
         // Create FFmpeg instance
         const ffmpeg = new FFmpeg();
         await ffmpeg.load();
 
         // Write input file
-        const inputFileName: string = 'input.mp4';
-        const outputFileName: string = 'compressed.mp4';
+        const inputFileName = trimmedBlob.type.includes('webm')
+          ? 'input.webm'
+          : 'input.mp4';
+        const outputFileName = 'compressed.mp4';
         await ffmpeg.writeFile(inputFileName, await fetchFile(trimmedBlob));
 
         updateProgress(40);
 
-        // Standard compression parameters for non-iOS
+        mobileLog('Starting video compression process');
+        // Set compression parameters - adjust these for quality vs size
+        // Android-friendly encoding settings
         await ffmpeg.exec([
           '-i',
           inputFileName,
           '-c:v',
           'libx264',
+          '-profile:v',
+          'main', // Better quality profile that's still compatible
+          '-level',
+          '4.0', // Higher level for better quality
+          '-pix_fmt',
+          'yuv420p',
           '-crf',
-          '28',
+          '22', // Lower value = higher quality (22 is good quality)
           '-preset',
-          'fast',
+          'medium', // Better compression (balance of speed vs quality)
+          '-tune',
+          'film', // Optimize for video content
           '-vf',
-          'scale=640:-2',
-          '-an', // Remove audio
+          'scale=640:-2', // Scale to 720p height while maintaining aspect ratio
+          '-an', // No audio
           outputFileName,
         ]);
 
         updateProgress(70);
 
+        const timestamp = Date.now();
+        const fullPath = `unprocessed_video/user/trim-${timestamp}.mp4`;
+
+        const { url, publicUrl } = await generateSignedUrl({
+          filename: fullPath,
+          contentType: 'video/mp4',
+          metadata: {
+            duration: trimDuration.toString(),
+            originalStart: startTime.toString(),
+            originalEnd: endTime.toString(),
+            trimmed: 'true',
+            width: canvas.width.toString(),
+            height: canvas.height.toString(),
+            userAgent: navigator.userAgent,
+          },
+        });
+
         // Read the compressed file
-        const data: Uint8Array = await ffmpeg.readFile(outputFileName);
-        compressedBlob = new Blob([data], { type: 'video/mp4' });
-      }
-
-      mobileLog(`Compressed size: ${compressedBlob.size / (1024 * 1024)} MB`);
-
-      // 6. Generate upload URL and metadata
-      interface SignedUrlResponse {
-        url: string;
-        publicUrl: string;
-      }
-
-      const timestamp: number = Date.now();
-      const fullPath: string = `unprocessed_video/user/trim-${timestamp}.mp4`;
-
-      const { url, publicUrl }: SignedUrlResponse = await generateSignedUrl({
-        filename: fullPath,
-        contentType: 'video/mp4',
-        metadata: {
-          duration: trimDuration.toString(),
-          originalStart: startTime.toString(),
-          originalEnd: endTime.toString(),
-          trimmed: 'true',
-          width: canvas.width.toString(),
-          height: canvas.height.toString(),
-          isIOS: isIOS.toString(),
-          isSafari: isSafari.toString(),
-        },
-      });
-
-      updateProgress(80);
-
-      // 7. Upload the trimmed and compressed video
-      const uploadResponse: Response = await fetch(url, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'video/mp4' },
-        body: compressedBlob,
-      });
-
-      if (!uploadResponse.ok) {
-        throw new Error(
-          `Upload failed: ${uploadResponse.status} ${uploadResponse.statusText}`
+        const data = await ffmpeg.readFile(outputFileName);
+        const compressedBlob = new Blob([data], { type: 'video/mp4' });
+        console.log(
+          'Compressed size:',
+          compressedBlob.size / (1024 * 1024),
+          'MB'
         );
+
+        mobileLog(`FFmpeg operations completed. Reading compressed file`);
+        mobileLog(`Compressed file size: ${compressedBlob.size} bytes`);
+
+        updateProgress(80);
+
+        mobileLog(
+          `Starting upload to GCS with signed URL to path: ${fullPath}`
+        );
+        // 6. Upload the trimmed video to GCS using signed URL
+        const uploadResponse = await fetch(url, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'video/mp4' },
+          body: compressedBlob,
+        });
+
+        if (!uploadResponse.ok) {
+          throw new Error(
+            `Upload failed: ${uploadResponse.status} ${uploadResponse.statusText}`
+          );
+        }
+
+        mobileLog(
+          `Upload response status: ${uploadResponse.status} ${uploadResponse.statusText}`
+        );
+
+        clearInterval(simulationInterval);
+        setUploadProgress(100);
+        setUploadedVideoUrl(publicUrl);
+
+        sessionStorage.setItem(
+          'trimInfo',
+          JSON.stringify({
+            videoUrl: publicUrl,
+            fileName: fullPath,
+            startTime: 0,
+            endTime: endTime - startTime,
+            duration: endTime - startTime,
+          })
+        );
+
+        // Redirect to results page
+        router.push('/analyse/results');
+      } catch (ffmpegError) {
+        console.error('Error during FFmpeg processing:', ffmpegError);
+        if (ffmpegError instanceof Error) {
+          throw new Error(`Video compression failed: ${ffmpegError.message}`);
+        } else {
+          throw new Error('Video compression failed due to an unknown error.');
+        }
       }
-
-      clearInterval(simulationInterval);
-      setUploadProgress(100);
-      setUploadedVideoUrl(publicUrl);
-
-      // Store trim information for reference
-      interface TrimInfo {
-        videoUrl: string;
-        fileName: string;
-        startTime: number;
-        endTime: number;
-        duration: number;
-      }
-
-      const trimInfo: TrimInfo = {
-        videoUrl: publicUrl,
-        fileName: fullPath,
-        startTime: 0,
-        endTime: trimDuration,
-        duration: trimDuration,
-      };
-
-      sessionStorage.setItem('trimInfo', JSON.stringify(trimInfo));
-
-      // Redirect to results page
-      router.push('/analyse/results');
     } catch (error) {
+      if (error instanceof Error) {
+        mobileLog(`Error: ${error.message}`);
+        mobileLog(`Error stack: ${error.stack?.substring(0, 500)}`);
+      } else {
+        mobileLog(`Error: ${String(error)}`);
+      }
       console.error('Error creating or uploading trimmed video:', error);
       setUploadError((error as Error).message);
-      mobileLog(`Error: ${(error as Error).message}`);
     } finally {
       clearInterval(simulationInterval);
       setIsUploading(false);
+    }
+  }
+
+  // Fallback function that captures frames without MediaRecorder
+  async function captureFramesAsVideo(
+    videoElement: HTMLVideoElement,
+    canvas: HTMLCanvasElement,
+    ctx: CanvasRenderingContext2D,
+    startTime: number,
+    endTime: number
+  ): Promise<Blob> {
+    console.log('Using fallback frame capture method');
+
+    try {
+      // Set the video to the start time
+      videoElement.currentTime = startTime;
+
+      // Wait for the video to seek to the start time
+      await new Promise<void>((resolve) => {
+        const onSeeked = () => {
+          videoElement.removeEventListener('seeked', onSeeked);
+          resolve();
+        };
+        videoElement.addEventListener('seeked', onSeeked);
+
+        // Add timeout in case event never fires
+        setTimeout(() => resolve(), 2000);
+      });
+
+      // Import FFmpeg directly here for the fallback
+      const { FFmpeg } = await import('@ffmpeg/ffmpeg');
+      const { fetchFile } = await import('@ffmpeg/util');
+
+      // Create FFmpeg instance
+      const ffmpeg = new FFmpeg();
+      await ffmpeg.load();
+
+      // Calculate number of frames to capture (assume 30fps)
+      const duration = endTime - startTime;
+      const fps = 30;
+      const frameCount = Math.ceil(duration * fps);
+
+      console.log(`Capturing ${frameCount} frames at ${fps} fps`);
+
+      // Make sure canvas size is reasonable but not too small
+      const canvasWidth = canvas.width;
+      const canvasHeight = canvas.height;
+      console.log(`Using canvas size: ${canvasWidth}x${canvasHeight}`);
+
+      // Create directory for frames
+      await ffmpeg.createDir('frames');
+
+      // Start capturing frames
+      for (let i = 0; i < frameCount; i++) {
+        const currentTime = startTime + i / fps;
+
+        // Set video position
+        videoElement.currentTime = currentTime;
+
+        // Wait for the seek to complete
+        await new Promise<void>((resolve) => {
+          const onSeeked = () => {
+            videoElement.removeEventListener('seeked', onSeeked);
+            resolve();
+          };
+          videoElement.addEventListener('seeked', onSeeked);
+
+          // Timeout for cases where seeked event doesn't fire
+          setTimeout(() => resolve(), 200);
+        });
+
+        // Draw the frame
+        ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+
+        // Get the frame as a blob
+        const frameDataUrl = canvas.toDataURL('image/jpeg', 0.9);
+        const frameBlob = await (await fetch(frameDataUrl)).blob();
+
+        // Write frame to FFmpeg
+        const frameData = await fetchFile(frameBlob);
+        const paddedIndex = i.toString().padStart(4, '0');
+        await ffmpeg.writeFile(`frames/frame${paddedIndex}.jpg`, frameData);
+
+        if (i % 10 === 0) {
+          console.log(`Captured frame ${i + 1}/${frameCount}`);
+        }
+      }
+
+      // Define input and output file names
+      const inputFramePattern = 'frames/frame%04d.jpg';
+      const outputFileName = 'output.mp4';
+
+      // Create video from frames
+      await ffmpeg.exec([
+        '-framerate',
+        fps.toString(),
+        '-i',
+        inputFramePattern,
+        '-c:v',
+        'libx264',
+        '-profile:v',
+        'main', // Use main profile instead of baseline for better quality
+        '-level',
+        '4.0', // Higher level (still mobile compatible)
+        '-pix_fmt',
+        'yuv420p',
+        '-crf',
+        '22', // Lower CRF value = higher quality (23-28 is normal, 18-22 is higher quality)
+        '-preset',
+        'medium', // Better compression (balance of speed/quality)
+        '-tune',
+        'film', // Optimize for video content
+        '-movflags',
+        '+faststart',
+        outputFileName,
+      ]);
+
+      console.log('Video creation complete, reading output file');
+
+      // Read the output video
+      const data = await ffmpeg.readFile(outputFileName);
+      console.log(`Output video size: ${data.length} bytes`);
+      return new Blob([data], { type: 'video/mp4' });
+    } catch (error) {
+      console.error('Error in captureFramesAsVideo:', error);
+      throw error;
+    }
+  }
+
+  // Add a function to fix the standardTrimVideo function for better compatibility
+  async function fixedStandardTrimVideo(
+    videoElement: HTMLVideoElement,
+    canvas: HTMLCanvasElement,
+    ctx: CanvasRenderingContext2D,
+    startTime: number,
+    endTime: number
+  ): Promise<Blob> {
+    console.log(`Starting video trimming from ${startTime}s to ${endTime}s`);
+
+    // Set the video to the start time
+    videoElement.currentTime = startTime;
+
+    // Wait for the video to seek to the start time
+    await new Promise<void>((resolve) => {
+      const onSeeked = () => {
+        videoElement.removeEventListener('seeked', onSeeked);
+        resolve();
+      };
+      videoElement.addEventListener('seeked', onSeeked);
+    });
+
+    try {
+      // Create a MediaRecorder to capture the frames
+      const stream = canvas.captureStream(30); // 30 FPS
+
+      // Try to determine the best MIME type for the output
+      let mimeType = '';
+
+      // Try these MIME types in order of preference
+      const mimeTypes = [
+        'video/webm;codecs=vp8',
+        'video/webm',
+        'video/mp4;codecs=h264',
+        'video/mp4',
+      ];
+
+      for (const type of mimeTypes) {
+        if (MediaRecorder.isTypeSupported(type)) {
+          mimeType = type;
+          break;
+        }
+      }
+
+      const options: MediaRecorderOptions = {};
+      if (mimeType) {
+        options.mimeType = mimeType;
+      }
+
+      // Always use a low bitrate for compatibility
+      (options as any).videoBitsPerSecond = 1000000; // 1 Mbps
+
+      const mediaRecorder = new MediaRecorder(stream, options);
+      console.log(
+        `Using MediaRecorder with MIME type: ${mediaRecorder.mimeType}`
+      );
+
+      const chunks: Blob[] = [];
+
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) {
+          chunks.push(e.data);
+        }
+      };
+
+      // Create a promise to wait for the recording to complete
+      const recordingPromise = new Promise<Blob>((resolve, reject) => {
+        mediaRecorder.onstop = () => {
+          try {
+            console.log(
+              `Recording stopped, creating blob from ${chunks.length} chunks`
+            );
+            const blob = new Blob(chunks, { type: mediaRecorder.mimeType });
+            resolve(blob);
+          } catch (err) {
+            reject(err);
+          }
+        };
+
+        mediaRecorder.onerror = (event) => {
+          reject(new Error('MediaRecorder error occurred'));
+        };
+      });
+
+      // Start recording
+      mediaRecorder.start(100); // Capture data in smaller chunks
+      console.log('Started MediaRecorder');
+
+      // Play the video
+      await videoElement.play();
+
+      // Set up the animation loop to draw video frames to canvas
+      const drawFrame = () => {
+        // Draw the current frame of the video onto the canvas
+        ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+
+        // Check if we've reached the end time
+        if (videoElement.currentTime < endTime) {
+          // Continue the animation loop
+          requestAnimationFrame(drawFrame);
+        } else {
+          // Stop when we reach the end time
+          videoElement.pause();
+          mediaRecorder.stop();
+          console.log('Reached end time, stopping recording');
+        }
+      };
+
+      // Start the animation loop
+      drawFrame();
+
+      // Wait for the recording to finish
+      return await recordingPromise;
+    } catch (error) {
+      console.error('Error during video trimming:', error);
+      throw error;
     }
   }
 
@@ -909,23 +1371,211 @@ function EditPage() {
           </div>
 
           {showDebugger && (
-            <div className="fixed bottom-20 left-0 right-0 max-h-48 overflow-y-auto bg-black/80 text-white text-xs p-2 z-50">
-              <div className="mb-2 flex justify-between">
-                <div>Debug Console</div>
-                <button onClick={() => setShowDebugger(false)}>Close</button>
-              </div>
-              {mobileDebugLogs.map((log, i) => (
-                <div key={i} className="border-b border-gray-700 py-1">
-                  {log}
+            <div className="fixed inset-0 bg-black/90 text-white text-xs p-2 z-50 overflow-auto">
+              <div className="flex justify-between items-center sticky top-0 bg-gray-800 p-2 mb-2">
+                <div className="font-bold">Debug Console</div>
+                <div className="flex space-x-2">
+                  <button
+                    onClick={() => {
+                      setMobileDebugLogs([]);
+                      // If using VideoDebugger, clear its logs too
+                      // Check if VideoDebugger is defined and clear logs if available
+                      if (
+                        typeof window !== 'undefined' &&
+                        (window as any).VideoDebugger
+                      ) {
+                        (window as any).VideoDebugger.clearLogs();
+                      }
+                    }}
+                    className="bg-red-600 px-2 py-1 rounded"
+                  >
+                    Clear
+                  </button>
+                  <button
+                    onClick={() => setShowDebugger(false)}
+                    className="bg-gray-600 px-2 py-1 rounded"
+                  >
+                    Close
+                  </button>
                 </div>
-              ))}
+              </div>
+
+              {/* Video metadata section */}
+              <div className="mb-4 bg-gray-800 p-2 rounded">
+                <div className="font-bold border-b border-gray-700 pb-1 mb-2">
+                  Video Info
+                </div>
+                <div className="grid grid-cols-2 gap-1">
+                  <div className="text-gray-400">Source:</div>
+                  <div>{videoSrc ? '✅ Available' : '❌ Missing'}</div>
+
+                  <div className="text-gray-400">Duration:</div>
+                  <div>{videoDuration.toFixed(2)}s</div>
+
+                  <div className="text-gray-400">Trim Range:</div>
+                  <div>
+                    {startTime.toFixed(2)}s - {endTime.toFixed(2)}s (
+                    {(endTime - startTime).toFixed(2)}s)
+                  </div>
+
+                  <div className="text-gray-400">Current Time:</div>
+                  <div>{currentTime.toFixed(2)}s</div>
+
+                  <div className="text-gray-400">Video Ref:</div>
+                  <div>{videoRef.current ? '✅ Available' : '❌ Missing'}</div>
+
+                  {videoRef.current && (
+                    <>
+                      <div className="text-gray-400">Video Dimensions:</div>
+                      <div>
+                        {videoRef.current.videoWidth || 0} ×{' '}
+                        {videoRef.current.videoHeight || 0}
+                      </div>
+
+                      <div className="text-gray-400">Ready State:</div>
+                      <div>{videoRef.current.readyState}</div>
+
+                      <div className="text-gray-400">Playback Rate:</div>
+                      <div>{videoRef.current.playbackRate}</div>
+
+                      {videoRef.current.error && (
+                        <>
+                          <div className="text-gray-400">Video Error:</div>
+                          <div className="text-red-500">
+                            Code: {videoRef.current.error.code}, Message:{' '}
+                            {videoRef.current.error.message}
+                          </div>
+                        </>
+                      )}
+                    </>
+                  )}
+
+                  <div className="text-gray-400">Upload Status:</div>
+                  <div>
+                    {isUploading
+                      ? `Uploading (${uploadProgress}%)`
+                      : uploadedVideoUrl
+                        ? '✅ Complete'
+                        : 'Not started'}
+                  </div>
+
+                  {uploadError && (
+                    <>
+                      <div className="text-gray-400">Upload Error:</div>
+                      <div className="text-red-500">{uploadError}</div>
+                    </>
+                  )}
+                </div>
+              </div>
+
+              {/* Action buttons */}
+              <div className="mb-4 flex space-x-2">
+                <button
+                  onClick={() => {
+                    const info = {
+                      userAgent: navigator.userAgent,
+                      videoState: {
+                        duration: videoRef.current?.duration || 0,
+                        videoWidth: videoRef.current?.videoWidth || 0,
+                        videoHeight: videoRef.current?.videoHeight || 0,
+                        readyState: videoRef.current?.readyState || 0,
+                        error: videoRef.current?.error
+                          ? {
+                              code: videoRef.current.error.code,
+                              message: videoRef.current.error.message,
+                            }
+                          : null,
+                      },
+                      trimInfo: {
+                        startTime,
+                        endTime,
+                        duration: endTime - startTime,
+                      },
+                    };
+
+                    mobileLog(`DEBUG INFO: ${JSON.stringify(info)}`);
+                  }}
+                  className="bg-blue-600 px-2 py-1 rounded"
+                >
+                  Log Video State
+                </button>
+
+                <button
+                  onClick={() => {
+                    if (videoRef.current) {
+                      const states = [
+                        'HAVE_NOTHING(0)',
+                        'HAVE_METADATA(1)',
+                        'HAVE_CURRENT_DATA(2)',
+                        'HAVE_FUTURE_DATA(3)',
+                        'HAVE_ENOUGH_DATA(4)',
+                      ];
+
+                      mobileLog(
+                        `Video readyState: ${videoRef.current.readyState} (${states[videoRef.current.readyState]})`
+                      );
+
+                      const mediaErrors = [
+                        'MEDIA_ERR_ABORTED(1)',
+                        'MEDIA_ERR_NETWORK(2)',
+                        'MEDIA_ERR_DECODE(3)',
+                        'MEDIA_ERR_SRC_NOT_SUPPORTED(4)',
+                      ];
+
+                      if (videoRef.current.error) {
+                        mobileLog(
+                          `Video error: ${videoRef.current.error.code} (${mediaErrors[videoRef.current.error.code - 1]}): ${videoRef.current.error.message}`
+                        );
+                      } else {
+                        mobileLog('No video errors detected');
+                      }
+                    } else {
+                      mobileLog('Video reference not available');
+                    }
+                  }}
+                  className="bg-green-600 px-2 py-1 rounded"
+                >
+                  Test Video
+                </button>
+              </div>
+
+              {/* Log output */}
+              <div className="mt-2">
+                <div className="font-bold border-b border-gray-700 pb-1 mb-2">
+                  Log Messages
+                </div>
+                {mobileDebugLogs.map((log, i) => (
+                  <div
+                    key={i}
+                    className="border-b border-gray-700 py-1 break-all"
+                    style={{
+                      backgroundColor: log.includes('ERROR')
+                        ? 'rgba(220, 38, 38, 0.2)'
+                        : log.includes('WARNING')
+                          ? 'rgba(251, 191, 36, 0.2)'
+                          : 'transparent',
+                    }}
+                  >
+                    {log}
+                  </div>
+                ))}
+              </div>
             </div>
           )}
+
+          {/* Debug button - make it more visible and detailed */}
           <button
             onClick={() => setShowDebugger((prev) => !prev)}
-            className="fixed top-2 right-2 bg-black/50 text-white text-xs p-1 rounded z-50"
+            className={`fixed top-2 right-2 ${isUploading || uploadError ? 'bg-red-600' : 'bg-black/50'} text-white text-xs p-2 rounded-full z-50 flex items-center`}
           >
-            Debug
+            <span className="mr-1">
+              <Activity size={16} />
+            </span>
+            {isUploading
+              ? `${uploadProgress}%`
+              : uploadError
+                ? 'Error'
+                : 'Debug'}
           </button>
         </>
       ) : (
