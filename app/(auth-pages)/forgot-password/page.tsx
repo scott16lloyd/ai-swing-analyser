@@ -6,12 +6,13 @@ import { Label } from '@/components/ui/label';
 import Link from 'next/link';
 import { SmtpMessage } from '../smtp-message';
 
-type PageProps = {
-  params: { [key: string]: string };
-  searchParams: { [key: string]: string | string[] | undefined };
-};
-
-export default function ForgotPassword({ searchParams }: PageProps) {
+export default function ForgotPassword({
+  params,
+  searchParams,
+}: {
+  params: any;
+  searchParams: any;
+}) {
   // Convert searchParams to Message type if needed
   const message = searchParams as unknown as Message;
 
