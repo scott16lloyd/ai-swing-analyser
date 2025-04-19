@@ -177,7 +177,7 @@ export default function HistoryPage() {
 
   // Render the component with proper loading states and error handling
   return (
-    <div className="h-full flex flex-col overflow-y-auto pb-16">
+    <div className="h-full flex flex-col overflow-y-auto pb-16 no-scrollbar">
       <div className="min-w-full px-4 py-6 flex-1">
         <h1 className="text-2xl font-bold mb-6 text-center">
           Your Swing History
@@ -246,7 +246,7 @@ export default function HistoryPage() {
                     </svg>
                   </div>
                 </div>
-                <div className="p-3 max-w-full">
+                <div className="p-3 w-screen">
                   <p className="text-sm text-gray-500">Swing analysis</p>
                   <p className="mt-1 truncate text-sm" title={video.fileName}>
                     {formatDate(video.timestamp)}

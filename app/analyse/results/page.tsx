@@ -7,10 +7,7 @@ import {
 } from '@/app/actions/storage';
 import { Button } from '@/components/ui/button';
 import { useRouter } from 'next/navigation';
-import { Activity } from 'lucide-react';
-import { X } from 'lucide-react';
-import { Check } from 'lucide-react';
-import { GraduationCap } from 'lucide-react';
+import { Activity, X, Check, GraduationCap, ArrowLeft } from 'lucide-react';
 import { createClient } from '@/utils/supabase/client';
 
 // Type definitions
@@ -38,6 +35,8 @@ interface SwingAnalysisResult {
 
 function AnalysisResults(): React.ReactElement {
   const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [videoLoading, setVideoLoading] = useState<boolean>(true);
+  const [analysisLoading, setAnalysisLoading] = useState<boolean>(true);
   const [authChecking, setAuthChecking] = useState<boolean>(true);
   const [processedVideo, setProcessedVideo] =
     useState<ProcessedVideoResult | null>(null);
@@ -49,11 +48,15 @@ function AnalysisResults(): React.ReactElement {
   const [debugLogs, setDebugLogs] = useState<string[]>([]);
   const [showDebugger, setShowDebugger] = useState<boolean>(false);
   const [originalVideo, setOriginalVideo] = useState<string | null>(null);
+  const [fromHistory, setFromHistory] = useState<boolean>(false);
   const router = useRouter();
   const [swingAnalysisResults, setSwingAnalysisResults] =
     useState<SwingAnalysisResult | null>(null);
   const [isAnalysing, setIsAnalysing] = useState(false);
   const [resultsReady, setResultsReady] = useState(false);
+  const [videoDisplayError, setVideoDisplayError] = useState<string | null>(
+    null
+  );
 
   // Debug log function
   const debugLog = useCallback((message: string): void => {
@@ -91,24 +94,175 @@ function AnalysisResults(): React.ReactElement {
     checkAuth();
   }, [router, debugLog]);
 
-  // Update processing stage based on time elapsed
+  // Load video and determine if from history
   useEffect(() => {
-    if (secondsElapsed < 10) {
-      setProcessingStage('Preparing for analysis...');
-    } else if (secondsElapsed < 30) {
-      setProcessingStage('Analysing swing mechanics...');
-    } else if (secondsElapsed < 60) {
-      setProcessingStage('Calculating measurements...');
-    } else if (secondsElapsed < 90) {
-      setProcessingStage('Generating visualisation...');
-    } else {
-      setProcessingStage('Finalising results...');
-    }
-  }, [secondsElapsed]);
+    // Immediately check if we're coming from history page
+    const fromHistoryFlag = sessionStorage.getItem('fromHistory');
+    const isFromHistory = fromHistoryFlag === 'true';
+    debugLog(`Is video from history? ${isFromHistory}`);
+    setFromHistory(isFromHistory);
 
-  // Check for the processed video
-  const checkForProcessedVideo = useCallback(
-    async (
+    // Get the trim info from sessionStorage
+    const trimInfoString = sessionStorage.getItem('trimInfo');
+    debugLog(`Retrieved trimInfo: ${trimInfoString ? 'yes' : 'no'}`);
+
+    if (!trimInfoString) {
+      setError('No video information found. Please upload a video first.');
+      setIsLoading(false);
+      setVideoLoading(false);
+      setAnalysisLoading(false);
+      return;
+    }
+
+    let trimInfo: TrimInfo;
+    try {
+      trimInfo = JSON.parse(trimInfoString) as TrimInfo;
+      debugLog(`Parsed trimInfo: ${JSON.stringify(trimInfo)}`);
+      setOriginalVideo(trimInfo.videoUrl);
+    } catch (e) {
+      setError('Invalid video information. Please try again.');
+      setIsLoading(false);
+      setVideoLoading(false);
+      setAnalysisLoading(false);
+      return;
+    }
+
+    const { fileName } = trimInfo;
+    if (!fileName) {
+      setError('No filename found. Please try uploading your video again.');
+      setIsLoading(false);
+      setVideoLoading(false);
+      setAnalysisLoading(false);
+      return;
+    }
+
+    // Extract the base name and extension for constructing the processed filename
+    const fileNameOnly = fileName.includes('/')
+      ? fileName.split('/').pop() || ''
+      : fileName;
+
+    const fileNameParts = fileNameOnly.split('.');
+    const extension = fileNameParts.pop() || 'mp4';
+    const baseName = fileNameParts.join('.');
+
+    debugLog(`Original filename: ${fileName}`);
+    debugLog(`Base name: ${baseName}`);
+    debugLog(`Is from history: ${isFromHistory}`);
+
+    // For videos from history, use the basename as is since they're already processed
+    let processedFileName;
+
+    // If the filename already contains '_processed', don't add it again
+    if (baseName.endsWith('_processed') || isFromHistory) {
+      processedFileName = `${baseName}.${extension}`;
+      debugLog('Using already processed filename or from history');
+    } else {
+      processedFileName = `${baseName}_processed.${extension}`;
+      debugLog('Adding _processed suffix to filename');
+    }
+
+    debugLog(`Looking for processed file: ${processedFileName}`);
+
+    let pollCount = 0;
+    const maxPolls = 24; // 2 minutes at 5 second intervals
+    let pollInterval: NodeJS.Timeout | undefined;
+
+    // Function to run each poll
+    const runPoll = async (): Promise<void> => {
+      pollCount++;
+      setSecondsElapsed(pollCount * 5);
+      debugLog(`Poll ${pollCount}/${maxPolls}`);
+
+      try {
+        const result = await checkForProcessedVideo(
+          fileName,
+          processedFileName
+        );
+
+        if (result.exists) {
+          // We found the processed video!
+          debugLog('Processed video found!');
+          debugLog(`Video URL: ${result.publicUrl}`);
+          if (pollInterval) clearInterval(pollInterval);
+          setProcessedVideo(result);
+          setVideoLoading(false);
+
+          // Construct the landmarks filename
+          // For landmarks, we want to use baseName without _processed
+          const cleanBaseName = baseName.endsWith('_processed')
+            ? baseName.slice(0, -10) // Remove '_processed'
+            : baseName;
+
+          const landmarksFileName = `landmarks/user/${cleanBaseName}_landmarks.json`;
+          debugLog(`Looking for landmarks file: ${landmarksFileName}`);
+
+          // Run analysis
+          setIsAnalysing(true);
+          try {
+            const analysisResult = await analyseGolfSwingLandmarks({
+              fileName: landmarksFileName,
+            });
+
+            debugLog(`Analysis result: ${JSON.stringify(analysisResult)}`);
+
+            if (analysisResult.error) {
+              debugLog(`Analysis error: ${analysisResult.error}`);
+              setAnalysisLoading(false);
+              setError(`Analysis error: ${analysisResult.error}`);
+            } else {
+              setSwingAnalysisResults(analysisResult);
+              setAnalysisLoading(false);
+            }
+          } catch (analysisError) {
+            if (analysisError instanceof Error) {
+              debugLog(`Error during analysis: ${analysisError.message}`);
+              setError(`Analysis error: ${(analysisError as Error).message}`);
+            } else {
+              debugLog('Error during analysis: An unknown error occurred.');
+              setError('An unknown error occurred during analysis.');
+            }
+            setAnalysisLoading(false);
+          } finally {
+            setIsAnalysing(false);
+          }
+        } else if (result.error) {
+          debugLog(`Error in poll: ${result.error}`);
+          // Continue polling if we haven't reached max polls
+          if (pollCount >= maxPolls) {
+            if (pollInterval) clearInterval(pollInterval);
+            setError(`Processing timed out: ${result.error}`);
+            setIsLoading(false);
+            setVideoLoading(false);
+            setAnalysisLoading(false);
+          }
+        } else if (pollCount >= maxPolls) {
+          // We've reached our timeout
+          debugLog('Max polls reached without finding the video');
+          if (pollInterval) clearInterval(pollInterval);
+          setError(
+            'Processing is taking longer than expected. Please try again later.'
+          );
+          setIsLoading(false);
+          setVideoLoading(false);
+          setAnalysisLoading(false);
+        }
+      } catch (err) {
+        const error = err as Error;
+        debugLog(`Exception in poll: ${error.message}`);
+        // If there's a network error, we may want to continue polling
+        // but if we hit max polls, we should stop
+        if (pollCount >= maxPolls) {
+          if (pollInterval) clearInterval(pollInterval);
+          setError(`Error checking video status: ${error.message}`);
+          setIsLoading(false);
+          setVideoLoading(false);
+          setAnalysisLoading(false);
+        }
+      }
+    };
+
+    // Check for the processed video
+    const checkForProcessedVideo = async (
       originalFileName: string,
       processedFileName: string
     ): Promise<ProcessedVideoResult> => {
@@ -140,144 +294,6 @@ function AnalysisResults(): React.ReactElement {
         debugLog(`Error in check: ${error.message}`);
         throw err;
       }
-    },
-    [debugLog]
-  );
-
-  // Effect to check if both video and analysis are ready
-  useEffect(() => {
-    if (processedVideo && swingAnalysisResults && !isAnalysing) {
-      debugLog('Both video and analysis results are ready');
-      setResultsReady(true);
-      setIsLoading(false);
-    }
-  }, [processedVideo, swingAnalysisResults, isAnalysing, debugLog]);
-
-  useEffect(() => {
-    // Get the trim info from sessionStorage
-    const trimInfoString = sessionStorage.getItem('trimInfo');
-    debugLog(`Retrieved trimInfo: ${trimInfoString ? 'yes' : 'no'}`);
-
-    if (!trimInfoString) {
-      setError('No video information found. Please upload a video first.');
-      setIsLoading(false);
-      return;
-    }
-
-    let trimInfo: TrimInfo;
-    try {
-      trimInfo = JSON.parse(trimInfoString) as TrimInfo;
-      debugLog(`Parsed trimInfo: ${JSON.stringify(trimInfo)}`);
-      setOriginalVideo(trimInfo.videoUrl);
-    } catch (e) {
-      setError('Invalid video information. Please try again.');
-      setIsLoading(false);
-      return;
-    }
-
-    const { fileName } = trimInfo;
-    if (!fileName) {
-      setError('No filename found. Please try uploading your video again.');
-      setIsLoading(false);
-      return;
-    }
-
-    // Extract the base name and extension for constructing the processed filename
-    const fileNameOnly = fileName.includes('/')
-      ? fileName.split('/').pop() || ''
-      : fileName;
-
-    const fileNameParts = fileNameOnly.split('.');
-    const extension = fileNameParts.pop() || 'mp4';
-    const baseName = fileNameParts.join('.');
-
-    // The actual filename we'll be looking for (with _processed appended)
-    const processedFileName = `${baseName}_processed.${extension}`;
-
-    debugLog(`Original filename: ${fileName}`);
-    debugLog(`Looking for processed file: ${processedFileName}`);
-
-    let pollCount = 0;
-    const maxPolls = 24; // 2 minutes at 5 second intervals
-    let pollInterval: NodeJS.Timeout | undefined;
-
-    // Function to run each poll
-    const runPoll = async (): Promise<void> => {
-      pollCount++;
-      setSecondsElapsed(pollCount * 5);
-      debugLog(`Poll ${pollCount}/${maxPolls}`);
-
-      try {
-        const result = await checkForProcessedVideo(
-          fileName,
-          processedFileName
-        );
-
-        if (result.exists) {
-          // We found the processed video!
-          debugLog('Processed video found!');
-          if (pollInterval) clearInterval(pollInterval);
-          setProcessedVideo(result);
-
-          // Construct the landmarks filename
-          const landmarksFileName = `landmarks/user/${baseName}_landmarks.json`;
-          debugLog(`Looking for landmarks file: ${landmarksFileName}`);
-
-          // Run analysis
-          setIsAnalysing(true);
-          try {
-            const analysisResult = await analyseGolfSwingLandmarks({
-              fileName: landmarksFileName,
-            });
-
-            debugLog(`Analysis result: ${JSON.stringify(analysisResult)}`);
-
-            if (analysisResult.error) {
-              debugLog(`Analysis error: ${analysisResult.error}`);
-              setIsLoading(false);
-            } else {
-              setSwingAnalysisResults(analysisResult);
-            }
-          } catch (analysisError) {
-            if (analysisError instanceof Error) {
-              debugLog(`Error during analysis: ${analysisError.message}`);
-            } else {
-              debugLog('Error during analysis: An unknown error occurred.');
-            }
-          } finally {
-            setIsAnalysing(false);
-            setIsLoading(false);
-          }
-
-          setIsLoading(false);
-        } else if (result.error) {
-          debugLog(`Error in poll: ${result.error}`);
-          // Continue polling if we haven't reached max polls
-          if (pollCount >= maxPolls) {
-            if (pollInterval) clearInterval(pollInterval);
-            setError(`Processing timed out: ${result.error}`);
-            setIsLoading(false);
-          }
-        } else if (pollCount >= maxPolls) {
-          // We've reached our timeout
-          debugLog('Max polls reached without finding the video');
-          if (pollInterval) clearInterval(pollInterval);
-          setError(
-            'Processing is taking longer than expected. Please try again later.'
-          );
-          setIsLoading(false);
-        }
-      } catch (err) {
-        const error = err as Error;
-        debugLog(`Exception in poll: ${error.message}`);
-        // If there's a network error, we may want to continue polling
-        // but if we hit max polls, we should stop
-        if (pollCount >= maxPolls) {
-          if (pollInterval) clearInterval(pollInterval);
-          setError(`Error checking video status: ${error.message}`);
-          setIsLoading(false);
-        }
-      }
     };
 
     // Initial check immediately
@@ -286,8 +302,41 @@ function AnalysisResults(): React.ReactElement {
       .then((result) => {
         if (result.exists) {
           debugLog('Video already processed!');
+          debugLog(`Video URL: ${result.publicUrl}`);
           setProcessedVideo(result);
-          setIsLoading(false);
+          setVideoLoading(false);
+
+          // If video is already processed, get the analysis as well
+          const cleanBaseName = baseName.endsWith('_processed')
+            ? baseName.slice(0, -10) // Remove '_processed'
+            : baseName;
+
+          const landmarksFileName = `landmarks/user/${cleanBaseName}_landmarks.json`;
+          debugLog(
+            `Looking for landmarks file immediately: ${landmarksFileName}`
+          );
+
+          setIsAnalysing(true);
+          analyseGolfSwingLandmarks({
+            fileName: landmarksFileName,
+          })
+            .then((analysisResult) => {
+              if (analysisResult.error) {
+                debugLog(`Analysis error: ${analysisResult.error}`);
+                setError(`Analysis error: ${analysisResult.error}`);
+              } else {
+                debugLog('Analysis successful');
+                setSwingAnalysisResults(analysisResult);
+              }
+              setAnalysisLoading(false);
+              setIsAnalysing(false);
+            })
+            .catch((err) => {
+              debugLog(`Analysis error: ${(err as Error).message}`);
+              setError(`Analysis error: ${(err as Error).message}`);
+              setAnalysisLoading(false);
+              setIsAnalysing(false);
+            });
         } else {
           debugLog('Initial check - video not processed yet, starting polling');
           // Start polling if not found in initial check
@@ -308,12 +357,70 @@ function AnalysisResults(): React.ReactElement {
         clearInterval(pollInterval);
       }
     };
-  }, [checkForProcessedVideo, debugLog]);
+  }, [debugLog]);
+
+  // Effect to check if both video and analysis are ready
+  useEffect(() => {
+    if (!videoLoading && !analysisLoading && !isAnalysing) {
+      debugLog('Both video and analysis completed loading');
+      setIsLoading(false);
+
+      if (processedVideo && processedVideo.publicUrl && swingAnalysisResults) {
+        debugLog('All data is present, setting results ready');
+        setResultsReady(true);
+      } else {
+        debugLog('Some data is missing:');
+        debugLog(`- processedVideo: ${processedVideo ? 'yes' : 'no'}`);
+        debugLog(`- publicUrl: ${processedVideo?.publicUrl ? 'yes' : 'no'}`);
+        debugLog(
+          `- swingAnalysisResults: ${swingAnalysisResults ? 'yes' : 'no'}`
+        );
+
+        if (!processedVideo || !processedVideo.publicUrl) {
+          setVideoDisplayError('Video could not be loaded.');
+        }
+      }
+    }
+  }, [
+    videoLoading,
+    analysisLoading,
+    isAnalysing,
+    processedVideo,
+    swingAnalysisResults,
+    debugLog,
+  ]);
 
   const handleBackToCapture = useCallback((): void => {
     debugLog('Navigating back to capture');
     router.push('/analyse');
   }, [router, debugLog]);
+
+  const handleBackToHistory = useCallback((): void => {
+    debugLog('Navigating back to history');
+    // Clean up session storage
+    sessionStorage.removeItem('fromHistory');
+    sessionStorage.removeItem('trimInfo');
+    router.push('/history');
+  }, [router, debugLog]);
+
+  // Handle video load error
+  const handleVideoError = useCallback(
+    (e: React.SyntheticEvent<HTMLVideoElement, Event>) => {
+      debugLog(
+        `Video load error: ${(e.target as HTMLVideoElement).error?.message || 'Unknown error'}`
+      );
+      setVideoDisplayError(
+        `Error loading video: ${(e.target as HTMLVideoElement).error?.message || 'Unknown error'}`
+      );
+    },
+    [debugLog]
+  );
+
+  // Handle successful video load
+  const handleVideoLoad = useCallback(() => {
+    debugLog('Video loaded successfully');
+    setVideoDisplayError(null);
+  }, [debugLog]);
 
   return (
     <div className="fixed inset-0 flex flex-col bg-black bg-opacity-95 text-white overflow-y-auto">
@@ -344,7 +451,12 @@ function AnalysisResults(): React.ReactElement {
             </div>
 
             <div className="mt-8">
-              <Button variant="ghost" onClick={handleBackToCapture}>
+              <Button
+                variant="ghost"
+                onClick={
+                  fromHistory ? handleBackToHistory : handleBackToCapture
+                }
+              >
                 Cancel
               </Button>
             </div>
@@ -356,20 +468,41 @@ function AnalysisResults(): React.ReactElement {
             <div className="bg-red-950 border border-red-400 text-red-300 px-4 py-3 rounded mb-4 max-w-md">
               <p>{error}</p>
             </div>
-            <Button onClick={handleBackToCapture}>Back to Capture</Button>
+            <Button
+              onClick={fromHistory ? handleBackToHistory : handleBackToCapture}
+            >
+              {fromHistory ? 'Back to History' : 'Back to Capture'}
+            </Button>
           </div>
         )}
 
-        {resultsReady &&
-          processedVideo &&
-          processedVideo.publicUrl &&
-          swingAnalysisResults && (
-            <div className="text-center">
-              <div className="bg-green-950 border border-green-400 text-green-300 px-4 py-3 rounded mb-4 max-w-md">
-                <p>Your swing analysis is ready!</p>
-              </div>
+        {!isLoading && !error && processedVideo && processedVideo.publicUrl && (
+          <div className="text-center">
+            {/* Show back to history button if coming from history */}
+            {fromHistory && (
+              <Button
+                variant="ghost"
+                onClick={handleBackToHistory}
+                className="absolute top-4 left-4 text-sm flex items-center"
+              >
+                <ArrowLeft className="mr-1" size={16} />
+                Back to History
+              </Button>
+            )}
 
-              <div className="my-6">
+            <div className="bg-green-950 border border-green-400 text-green-300 px-4 py-3 rounded mb-4 max-w-md">
+              <p>Your swing analysis is ready!</p>
+            </div>
+
+            <div className="my-6">
+              {videoDisplayError ? (
+                <div className="bg-red-950 border border-red-400 text-red-300 px-4 py-3 rounded mb-4 max-w-md">
+                  <p>{videoDisplayError}</p>
+                  <p className="mt-2 text-sm">
+                    URL: {processedVideo.publicUrl}
+                  </p>
+                </div>
+              ) : (
                 <video
                   src={processedVideo.publicUrl}
                   controls
@@ -377,10 +510,14 @@ function AnalysisResults(): React.ReactElement {
                   autoPlay
                   playsInline
                   loop
+                  onError={handleVideoError}
+                  onLoadedData={handleVideoLoad}
                 />
-              </div>
+              )}
+            </div>
 
-              {/* Swing analysis results */}
+            {/* Swing analysis results */}
+            {swingAnalysisResults ? (
               <div className="mt-4 text-left bg-gray-900 p-4 rounded-lg max-w-md mx-auto">
                 <div className="flex justify-between items-center mb-2">
                   <h3 className="text-xl font-bold">Swing Analysis</h3>
@@ -438,14 +575,30 @@ function AnalysisResults(): React.ReactElement {
                   ))}
                 </div>
               </div>
+            ) : (
+              <div className="bg-yellow-900 border border-yellow-400 text-yellow-200 px-4 py-3 rounded mb-4 max-w-md">
+                <p>Swing analysis is still processing. Please wait a moment.</p>
+              </div>
+            )}
 
-              <div className="mt-6 flex gap-4 justify-center">
+            <div className="mt-6 flex gap-4 justify-center">
+              {fromHistory ? (
+                <div className="flex flex-row sm:flex-row gap-4">
+                  <Button onClick={handleBackToHistory} className="text-md p-5">
+                    Back to History
+                  </Button>
+                  <Button onClick={handleBackToCapture} className="text-md p-5">
+                    Record New Swing
+                  </Button>
+                </div>
+              ) : (
                 <Button onClick={handleBackToCapture} className="text-md p-5">
                   Record Another Swing
                 </Button>
-              </div>
+              )}
             </div>
-          )}
+          </div>
+        )}
       </div>
 
       {/* Debug panel */}
