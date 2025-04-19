@@ -6,13 +6,11 @@ import { Label } from '@/components/ui/label';
 import Link from 'next/link';
 import { SmtpMessage } from '../smtp-message';
 
-export default function ForgotPassword({
-  params,
-  searchParams,
-}: {
-  params: any;
-  searchParams: any;
-}) {
+type Props = {
+  searchParams?: { [key: string]: string | string[] | undefined };
+};
+
+export default function ForgotPassword({ searchParams = {} }: Props) {
   // Convert searchParams to Message type if needed
   const message = searchParams as unknown as Message;
 
