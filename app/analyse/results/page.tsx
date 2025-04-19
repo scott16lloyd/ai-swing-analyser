@@ -11,6 +11,7 @@ import { Activity } from 'lucide-react';
 import { X } from 'lucide-react';
 import { Check } from 'lucide-react';
 import { GraduationCap } from 'lucide-react';
+import { createClient } from '@/utils/supabase/client';
 
 // Type definitions
 interface ProcessedVideoResult {
@@ -37,6 +38,7 @@ interface SwingAnalysisResult {
 
 function AnalysisResults(): React.ReactElement {
   const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [authChecking, setAuthChecking] = useState<boolean>(true);
   const [processedVideo, setProcessedVideo] =
     useState<ProcessedVideoResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -63,6 +65,31 @@ function AnalysisResults(): React.ReactElement {
       ].slice(0, 50)
     );
   }, []);
+
+  // Check authentication on component mount
+  useEffect(() => {
+    const checkAuth = async () => {
+      try {
+        const supabase = createClient();
+        const { data, error } = await supabase.auth.getUser();
+
+        if (error || !data.user) {
+          debugLog('Not authenticated, redirecting to sign-in');
+          router.push('/sign-in');
+          return;
+        }
+
+        debugLog('User authenticated, proceeding with component');
+        // User is authenticated, we can proceed
+        setAuthChecking(false);
+      } catch (error) {
+        console.error('Error checking authentication:', error);
+        router.push('/sign-in');
+      }
+    };
+
+    checkAuth();
+  }, [router, debugLog]);
 
   // Update processing stage based on time elapsed
   useEffect(() => {

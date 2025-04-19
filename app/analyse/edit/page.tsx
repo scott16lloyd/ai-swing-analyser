@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Activity } from 'lucide-react';
 import { uploadVideoToGCS, generateSignedUrl } from '@/app/actions/storage';
 import { standardTrimVideo } from '@/lib/videoUtils';
+import { createClient } from '@/utils/supabase/client';
 
 function EditPage() {
   const [videoSrc, setVideoSrc] = useState<string | null>(null);
@@ -23,6 +24,8 @@ function EditPage() {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploadedVideoUrl, setUploadedVideoUrl] = useState<string | null>(null);
+  const [currentUser, setCurrentUser] = useState<any>(null);
+  const [authChecked, setAuthChecked] = useState(false);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -31,11 +34,79 @@ function EditPage() {
   const containerRef = useRef<HTMLDivElement>(null);
   const router = useRouter();
 
+  // Check authentication on component mount
+  useEffect(() => {
+    const checkAuth = async () => {
+      try {
+        const supabase = createClient();
+        const { data, error } = await supabase.auth.getUser();
+
+        if (error || !data.user) {
+          // Use client-side navigation instead of server-side redirect
+          router.push('/sign-in');
+          return;
+        }
+
+        // User is authenticated, we can proceed
+        setIsLoading(false);
+      } catch (error) {
+        console.error('Error checking authentication:', error);
+        router.push('/sign-in');
+      }
+    };
+
+    checkAuth();
+  }, [router]);
+
   // Debug log for mobile
   const mobileLog = useCallback((message: string) => {
     console.log(message);
     setMobileDebugLogs((prev) => [message, ...prev].slice(0, 20));
   }, []);
+
+  // Get current logged in user
+  const getCurrentUser = useCallback(async () => {
+    try {
+      // Create supabase client
+      const supabase = createClient();
+
+      // Get user data from current session
+      const {
+        data: { user },
+        error,
+      } = await supabase.auth.getUser();
+
+      if (error) {
+        console.error('Error fetching user:', error.message);
+        mobileLog(`Error fetching user: ${error.message}`);
+        return;
+      }
+
+      if (!user) {
+        console.log('No user found - not logged in');
+        mobileLog('No user found - not logged in');
+        return;
+      }
+
+      // Log the user information
+      console.log('Current user:', user);
+      mobileLog(`Logged in: ${user.email || user.phone} (${user.id})`);
+
+      setCurrentUser(user);
+
+      return user;
+    } catch (error: any) {
+      console.error('Unexpected error in getCurrentUser:', error);
+      mobileLog(`Unexpected error in getCurrentUser: ${error.message}`);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!authChecked) {
+      getCurrentUser();
+      setAuthChecked(true);
+    }
+  }, [authChecked, getCurrentUser]);
 
   useEffect(() => {
     // Check if we need a fresh page load
@@ -579,7 +650,7 @@ function EditPage() {
       updateProgress(70);
 
       const timestamp = Date.now();
-      const fullPath = `unprocessed_video/user/trim-${timestamp}.mp4`;
+      const fullPath = `unprocessed_video/user/trim-${currentUser.id}-${timestamp}.mp4`;
 
       const { url, publicUrl } = await generateSignedUrl({
         filename: fullPath,

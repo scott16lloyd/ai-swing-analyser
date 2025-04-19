@@ -765,3 +765,153 @@ export async function analyseGolfSwingLandmarks({
     };
   }
 }
+
+/**
+ * Gets all processed videos belonging to a specific user
+ *
+ * @param userId - The user ID to search for in filenames
+ * @param options - Optional configuration parameters
+ * @returns Array of video files with public URLs and metadata
+ */
+export async function getUserVideos(
+  userId: string,
+  options: {
+    bucketName?: string;
+    processedFolder?: string;
+  } = {}
+): Promise<{
+  success: boolean;
+  files: Array<{
+    fileName: string;
+    publicUrl: string;
+    timestamp?: number;
+    metadata?: Record<string, any>;
+  }>;
+  error?: string;
+}> {
+  if (!userId) {
+    return {
+      success: false,
+      files: [],
+      error: 'User ID is required',
+    };
+  }
+
+  // Get bucket name from params or environment variables
+  const bucketName =
+    options.bucketName ||
+    process.env.STORAGE_BUCKET_NAME ||
+    process.env.POSE_ESTIMATION_ANALYSIS_BUCKET;
+
+  if (!bucketName) {
+    return {
+      success: false,
+      files: [],
+      error: 'Storage bucket name not configured',
+    };
+  }
+
+  // Set default processed folder path
+  const processedFolder = options.processedFolder || 'processed_video/user';
+
+  try {
+    // Get service account credentials from environment variable
+    const serviceKeyEnv = process.env.GOOGLE_CLOUD_SERVICE_KEY;
+    if (!serviceKeyEnv) {
+      return {
+        success: false,
+        files: [],
+        error: 'Google Cloud service account key not configured',
+      };
+    }
+
+    // Parse the service account credentials
+    let credentials;
+    try {
+      credentials = JSON.parse(serviceKeyEnv);
+    } catch (e) {
+      return {
+        success: false,
+        files: [],
+        error: 'Invalid Google Cloud service account key format',
+      };
+    }
+
+    // Initialize Google Cloud Storage with credentials
+    const { Storage } = require('@google-cloud/storage');
+    const storage = new Storage({
+      credentials,
+      projectId: credentials.project_id,
+    });
+
+    // Get the bucket and list files in the processed folder
+    const bucket = storage.bucket(bucketName);
+    const [files] = await bucket.getFiles({
+      prefix: processedFolder,
+    });
+
+    // Filter files that contain the user ID
+    const userFiles: Array<import('@google-cloud/storage').File> = files.filter(
+      (file: import('@google-cloud/storage').File) => file.name.includes(userId)
+    );
+
+    // Generate metadata and signed URLs for each file
+    const fileDetails = await Promise.all(
+      userFiles.map(async (file) => {
+        // Extract timestamp from filename if present
+        const timestampMatch = file.name.match(/(\d{13})_processed/);
+        const timestamp = timestampMatch
+          ? parseInt(timestampMatch[1])
+          : undefined;
+
+        // Get metadata
+        let metadata = {};
+        try {
+          const [metaData] = await file.getMetadata();
+          metadata = {
+            size: metaData.size,
+            contentType: metaData.contentType,
+            timeCreated: metaData.timeCreated,
+            updated: metaData.updated,
+          };
+        } catch (error) {
+          console.warn(`Failed to get metadata for ${file.name}:`, error);
+        }
+
+        // Generate signed URL for access
+        const [url] = await file.getSignedUrl({
+          version: 'v4',
+          action: 'read',
+          expires: Date.now() + 24 * 60 * 60 * 1000, // 24 hours
+        });
+
+        return {
+          fileName: file.name,
+          publicUrl: url,
+          timestamp,
+          metadata,
+        };
+      })
+    );
+
+    // Sort files by timestamp (newest first) if timestamp is available
+    fileDetails.sort((a, b) => {
+      if (a.timestamp && b.timestamp) {
+        return b.timestamp - a.timestamp;
+      }
+      return 0;
+    });
+
+    return {
+      success: true,
+      files: fileDetails,
+    };
+  } catch (error) {
+    console.error('Error getting user videos:', error);
+    return {
+      success: false,
+      files: [],
+      error: `Failed to get user videos: ${(error as Error).message}`,
+    };
+  }
+}
