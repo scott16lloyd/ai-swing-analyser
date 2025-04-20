@@ -5,13 +5,9 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import Link from 'next/link';
 
-// Define the correct props interface for Next.js App Router pages
-interface PageProps {
-  params: Record<string, string>;
-  searchParams: Record<string, string | string[] | undefined>;
-}
-
-export default function Login({ searchParams }: PageProps) {
+export default function Login({ searchParams }: { searchParams: any }) {
+  // Handle the searchParams conversion to Message
+  const message = searchParams as unknown as Message;
   return (
     <form className="flex-1 flex flex-col min-w-64">
       <h1 className="text-2xl font-medium">Sign in</h1>
@@ -42,7 +38,7 @@ export default function Login({ searchParams }: PageProps) {
         <SubmitButton pendingText="Signing In..." formAction={signInAction}>
           Sign in
         </SubmitButton>
-        <FormMessage message={searchParams as unknown as Message} />
+        <FormMessage message={message} />
       </div>
     </form>
   );
