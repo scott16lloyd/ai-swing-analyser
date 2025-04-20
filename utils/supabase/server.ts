@@ -1,5 +1,5 @@
-import { createServerClient } from "@supabase/ssr";
-import { cookies } from "next/headers";
+import { createServerClient } from '@supabase/ssr';
+import { cookies } from 'next/headers';
 
 export const createClient = () => {
   const cookieStore = cookies();
@@ -10,12 +10,12 @@ export const createClient = () => {
     {
       cookies: {
         getAll() {
-          return cookieStore.getAll();
+          return cookieStore.then((store) => store.getAll());
         },
         setAll(cookiesToSet) {
           try {
             cookiesToSet.forEach(({ name, value, options }) => {
-              cookieStore.set(name, value, options);
+              cookieStore.then((store) => store.set(name, value, options));
             });
           } catch (error) {
             // The `set` method was called from a Server Component.
@@ -24,6 +24,6 @@ export const createClient = () => {
           }
         },
       },
-    },
+    }
   );
 };
