@@ -150,7 +150,7 @@ function AnalysisResults(): React.ReactElement {
     debugLog(`Is from history: ${isFromHistory}`);
 
     // For videos from history, use the basename as is since they're already processed
-    let processedFileName;
+    let processedFileName: string;
 
     // If the filename already contains '_processed', don't add it again
     if (baseName.endsWith('_processed') || isFromHistory) {
