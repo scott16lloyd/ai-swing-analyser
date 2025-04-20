@@ -6,11 +6,11 @@ import { Label } from '@/components/ui/label';
 import Link from 'next/link';
 import { SmtpMessage } from '../smtp-message';
 
-// Define the page component without explicit typing at first
+// Accept just the searchParams without trying to type the full page props
 export default function ForgotPassword({
-  searchParams,
+  searchParams = {},
 }: {
-  searchParams?: Record<string, string | string[]>;
+  searchParams?: any;
 }) {
   // Convert searchParams to Message type if needed
   const message = searchParams as unknown as Message;
