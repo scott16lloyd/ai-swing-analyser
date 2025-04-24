@@ -1159,3 +1159,156 @@ export async function fetchExistingAnalysisResults({
     };
   }
 }
+
+/**
+ * Fetches all inference results for a specific user
+ *
+ * @param userId - The user ID to search for in filenames
+ * @param options - Optional configuration parameters
+ * @returns Array of inference results sorted by date (newest first)
+ */
+export async function getUserInferenceResults(
+  userId: string,
+  options: {
+    bucketName?: string;
+    inferenceFolder?: string;
+  } = {}
+): Promise<{
+  success: boolean;
+  data: Array<any>; // Using any to preserve original data structure
+  error?: string;
+}> {
+  if (!userId) {
+    return {
+      success: false,
+      data: [],
+      error: 'User ID is required',
+    };
+  }
+
+  // Get bucket name from params or environment variables
+  const bucketName =
+    options.bucketName ||
+    process.env.STORAGE_BUCKET_NAME ||
+    process.env.POSE_ESTIMATION_ANALYSIS_BUCKET;
+
+  if (!bucketName) {
+    return {
+      success: false,
+      data: [],
+      error: 'Storage bucket name not configured',
+    };
+  }
+
+  // Set default inference results folder path
+  const inferenceFolder = options.inferenceFolder || 'inference_results';
+
+  try {
+    // Get service account credentials from environment variable
+    const serviceKeyEnv = process.env.GOOGLE_CLOUD_SERVICE_KEY;
+    if (!serviceKeyEnv) {
+      return {
+        success: false,
+        data: [],
+        error: 'Google Cloud service account key not configured',
+      };
+    }
+
+    // Parse the service account credentials
+    let credentials;
+    try {
+      credentials = JSON.parse(serviceKeyEnv);
+    } catch (e) {
+      return {
+        success: false,
+        data: [],
+        error: 'Invalid Google Cloud service account key format',
+      };
+    }
+
+    // Initialize Google Cloud Storage with credentials
+    const { Storage } = require('@google-cloud/storage');
+    const storage = new Storage({
+      credentials,
+      projectId: credentials.project_id,
+    });
+
+    // Get the bucket and list files in the inference results folder
+    const bucket = storage.bucket(bucketName);
+    const [files] = await bucket.getFiles({
+      prefix: inferenceFolder,
+    });
+
+    console.log(`Found ${files.length} files in ${inferenceFolder} folder`);
+
+    // Filter files that contain the user ID
+    const userFiles: Array<import('@google-cloud/storage').File> = files.filter(
+      (file: import('@google-cloud/storage').File) => file.name.includes(userId)
+    );
+
+    console.log(`Found ${userFiles.length} files matching user ID: ${userId}`);
+
+    // Download and parse each file
+    const resultsData = await Promise.all(
+      userFiles.map(async (file) => {
+        try {
+          // Download the file contents
+          const [fileContents] = await file.download();
+          const results = JSON.parse(fileContents.toString('utf-8'));
+
+          // Extract timestamp from filename for sorting purposes
+          // Format: trim-146f59fa-c2e9-4321-ae86-cea2a0750db0-1745509896463_inference_results.json
+          const timestampMatch = file.name.match(
+            /(\d{13})_inference_results\.json$/
+          );
+          const timestamp = timestampMatch ? parseInt(timestampMatch[1]) : 0;
+
+          // Add filename as metadata (without modifying original data)
+          return {
+            ...results,
+            _metadata: {
+              fileName: file.name,
+              fileTimestamp: timestamp,
+            },
+          };
+        } catch (error) {
+          console.error(`Error processing file ${file.name}:`, error);
+          return null;
+        }
+      })
+    );
+
+    // Filter out any failed results and sort by date (newest first)
+    // Use timestamp from the data if available, otherwise use the filename timestamp
+    const validResults = resultsData
+      .filter((result): result is NonNullable<typeof result> => result !== null)
+      .sort((a, b) => {
+        // Try to use timestamp from the data if available
+        const dateA = a.timestamp
+          ? new Date(a.timestamp).getTime()
+          : a._metadata.fileTimestamp;
+        const dateB = b.timestamp
+          ? new Date(b.timestamp).getTime()
+          : b._metadata.fileTimestamp;
+        return dateB - dateA;
+      });
+
+    // Remove the _metadata property before returning the results
+    const cleanResults = validResults.map((result) => {
+      const { _metadata, ...cleanResult } = result;
+      return cleanResult;
+    });
+
+    return {
+      success: true,
+      data: cleanResults,
+    };
+  } catch (error) {
+    console.error('Error getting user inference results:', error);
+    return {
+      success: false,
+      data: [],
+      error: `Failed to get user inference results: ${(error as Error).message}`,
+    };
+  }
+}
