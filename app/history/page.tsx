@@ -97,19 +97,26 @@ export default function HistoryPage() {
         ? parseFloat(video.metadata.duration)
         : 0;
 
-      // Make sure we have the correct file name without duplicate "_processed" suffixes
-      let fileName = video.fileName;
-      // If the fileName already ends with "_processed.mp4", ensure we don't add another one
-      if (fileName.includes('_processed_processed.mp4')) {
-        fileName = fileName.replace(
-          '_processed_processed.mp4',
-          '_processed.mp4'
-        );
+      // Extract just the base filename without the path
+      const filePathParts = video.fileName.split('/');
+      const fileNameOnly = filePathParts[filePathParts.length - 1];
+
+      // Make sure we're using the basename without "_processed" suffix
+      // since we want to point to the original file
+      let baseFileName = fileNameOnly;
+      if (baseFileName.includes('_processed.mp4')) {
+        baseFileName = baseFileName.replace('_processed.mp4', '.mp4');
       }
+
+      // Get the full path
+      const fullPath = video.fileName;
+
+      console.log(`Handling video click for: ${fullPath}`);
+
       // Create trim info object similar to what's created in EditPage
       const trimInfo = {
         videoUrl: video.publicUrl,
-        fileName: video.fileName,
+        fileName: fullPath, // Use the full path including directories
         startTime: 0, // Since this is a processed video, start from beginning
         endTime: duration || 0,
         duration: duration || 0,
