@@ -5,6 +5,7 @@ import { PlayerProgressChart } from '@/components/player-progress-chart';
 import { CurrentScoreCard, ImprovementCard } from '@/components/stat-chart';
 import { getUserInferenceResults } from '@/app/actions/storage';
 import { createClient } from '@/utils/supabase/client';
+import { useRouter } from 'next/navigation';
 
 // Define interfaces for the data types
 interface SwingData {
@@ -171,6 +172,7 @@ export default function ProgressPage() {
   const [error, setError] = useState<string | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
+  const router = useRouter();
 
   // Check authentication on component mount
   useEffect(() => {
@@ -179,34 +181,22 @@ export default function ProgressPage() {
         const supabase = createClient();
         const { data, error } = await supabase.auth.getUser();
 
-        if (error) {
-          console.error('Auth error:', error.message);
-          setError('Authentication error: ' + error.message);
-          setIsLoading(false);
-          return;
-        }
-
-        if (!data.user) {
-          console.log('No user found');
-          setError('No authenticated user found');
-          setIsLoading(false);
+        if (error || !data.user) {
+          router.push('/sign-in');
           return;
         }
 
         // User is authenticated, we can proceed
-        console.log('User authenticated:', data.user.id);
         setUserId(data.user.id);
-      } catch (err) {
-        console.error('Error checking authentication:', err);
-        setError('Failed to check authentication');
-        setIsLoading(false);
-      } finally {
-        setAuthChecked(true);
+        console.log(userId);
+      } catch (error) {
+        console.error('Error checking authentication:', error);
+        router.push('/sign-in');
       }
     };
 
     checkAuth();
-  }, []);
+  }, [router]);
 
   // Fetch data once we have a userId
   useEffect(() => {
