@@ -3,6 +3,7 @@
 import { getUserVideos } from '@/app/actions/storage';
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { createClient } from '@/utils/supabase/client';
 
 // Define types for video data
 interface VideoFile {
@@ -18,54 +19,75 @@ interface VideoResults {
   error?: string;
 }
 
-interface CachedThumbnail {
-  url: string;
-  timestamp: number;
-}
-
 export default function HistoryPage() {
   // State to store video data
   const [videos, setVideos] = useState<VideoFile[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [thumbnails, setThumbnails] = useState<Record<string, string>>({});
+  const [userId, setUserId] = useState<string | null>(null);
+  const [authChecking, setAuthChecking] = useState<boolean>(true);
   const router = useRouter();
 
-  // Sample user ID - in production you would get this from authentication
-  const userId = '146f59fa-c2e9-4321-ae86-cea2a0750db0';
-
-  // Cache duration: 7 days in milliseconds
-  const CACHE_DURATION = 7 * 24 * 60 * 60 * 1000;
-
+  // Check authentication on component mount
   useEffect(() => {
-    const fetchVideos = async () => {
+    const checkAuth = async () => {
       try {
-        setIsLoading(true);
+        const supabase = createClient();
+        const { data, error } = await supabase.auth.getUser();
 
-        // Call your function to get user videos
-        const results = await getUserVideos(userId);
-
-        if (results.success) {
-          setVideos(results.files);
-          console.log(`Found ${results.files.length} videos for this user`);
-
-          if (results.files.length > 0) {
-            console.log(`Latest video: ${results.files[0].fileName}`);
-          }
-        } else {
-          setError(results.error || 'Unknown error occurred');
-          console.error(`Error: ${results.error}`);
+        if (error || !data.user) {
+          router.push('/sign-in');
+          return;
         }
-      } catch (err) {
-        setError((err as Error).message);
-        console.error('Failed to fetch videos:', err);
-      } finally {
-        setIsLoading(false);
+
+        // User is authenticated, we can proceed
+        setUserId(data.user.id);
+        setAuthChecking(false);
+        console.log(userId);
+      } catch (error) {
+        console.error('Error checking authentication:', error);
+        router.push('/sign-in');
       }
     };
 
-    fetchVideos();
+    checkAuth();
+  }, [router]);
+
+  // Only fetch videos when userId is available and not null
+  useEffect(() => {
+    if (userId) {
+      fetchVideos();
+    }
   }, [userId]);
+
+  const fetchVideos = async () => {
+    try {
+      setIsLoading(true);
+
+      if (!userId) {
+        throw new Error('User ID is null');
+      }
+      const results = await getUserVideos(userId);
+
+      if (results.success) {
+        setVideos(results.files);
+        console.log(`Found ${results.files.length} videos for this user`);
+
+        if (results.files.length > 0) {
+          console.log(`Latest video: ${results.files[0].fileName}`);
+        }
+      } else {
+        setError(results.error || 'Unknown error occurred');
+        console.error(`Error: ${results.error}`);
+      }
+    } catch (err) {
+      setError((err as Error).message);
+      console.error('Failed to fetch videos:', err);
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   // Function to handle video click
   const handleVideoClick = (video: VideoFile) => {
@@ -119,57 +141,9 @@ export default function HistoryPage() {
     });
   };
 
-  // Check if a thumbnail exists in the cache
-  const getThumbnailFromCache = (url: string): string | null => {
-    try {
-      const cacheKey = `thumbnail_${url}`;
-      const cachedData = localStorage.getItem(cacheKey);
-
-      if (!cachedData) return null;
-
-      const cachedThumbnail: CachedThumbnail = JSON.parse(cachedData);
-
-      // Check if cache has expired
-      if (Date.now() - cachedThumbnail.timestamp > CACHE_DURATION) {
-        localStorage.removeItem(cacheKey);
-        return null;
-      }
-
-      return cachedThumbnail.url;
-    } catch (error) {
-      console.error(`Error retrieving from cache:`, error);
-      return null;
-    }
-  };
-
-  // Save a thumbnail to the cache
-  const saveThumbnailToCache = (url: string, thumbnailUrl: string): void => {
-    try {
-      const cacheKey = `thumbnail_${url}`;
-      const cachedThumbnail: CachedThumbnail = {
-        url: thumbnailUrl,
-        timestamp: Date.now(),
-      };
-
-      localStorage.setItem(cacheKey, JSON.stringify(cachedThumbnail));
-    } catch (error) {
-      console.error('Error saving to cache:', error);
-    }
-  };
-
   // Function to extract a thumbnail from a video
   const extractThumbnail = (video: HTMLVideoElement, url: string) => {
     return new Promise<void>((resolve) => {
-      // First check if we have this thumbnail in cache
-      const cachedThumbnail = getThumbnailFromCache(url);
-      if (cachedThumbnail) {
-        setThumbnails((prev) => ({
-          ...prev,
-          [url]: cachedThumbnail,
-        }));
-        resolve();
-        return;
-      }
       // Set up event handlers before setting the src
       video.onloadedmetadata = () => {
         // Seek to the middle of the video
@@ -193,9 +167,6 @@ export default function HistoryPage() {
             ...prev,
             [url]: thumbnailUrl,
           }));
-
-          // Save to cache
-          saveThumbnailToCache(url, thumbnailUrl);
         }
 
         // Clean up
