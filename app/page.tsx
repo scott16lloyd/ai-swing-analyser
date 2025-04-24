@@ -1,16 +1,24 @@
-import Hero from "@/components/hero";
-import ConnectSupabaseSteps from "@/components/tutorial/connect-supabase-steps";
-import SignUpUserSteps from "@/components/tutorial/sign-up-user-steps";
-import { hasEnvVars } from "@/utils/supabase/check-env-vars";
+import { redirect } from 'next/navigation';
+import { createClient } from '@/utils/supabase/server';
 
-export default async function Index() {
+export default async function RootPage() {
+  const supabase = createClient();
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+
+  // If user is authenticated, redirect to /analyse
+  if (session) {
+    redirect('/analyse');
+  }
+
+  // If user is not authenticated, you can either:
+  // Redirect to sign-in page
+  redirect('/sign-in');
+
   return (
-    <>
-      <Hero />
-      <main className="flex-1 flex flex-col gap-6 px-4">
-        <h2 className="font-medium text-xl mb-4">Next steps</h2>
-        {hasEnvVars ? <SignUpUserSteps /> : <ConnectSupabaseSteps />}
-      </main>
-    </>
+    <div className="flex-1 w-full flex flex-col gap-20 items-center">
+      {/* Add any other landing page components here */}
+    </div>
   );
 }
