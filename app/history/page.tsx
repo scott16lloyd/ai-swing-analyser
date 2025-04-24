@@ -18,6 +18,11 @@ interface VideoResults {
   error?: string;
 }
 
+interface CachedThumbnail {
+  url: string;
+  timestamp: number;
+}
+
 export default function HistoryPage() {
   // State to store video data
   const [videos, setVideos] = useState<VideoFile[]>([]);
@@ -28,6 +33,9 @@ export default function HistoryPage() {
 
   // Sample user ID - in production you would get this from authentication
   const userId = '146f59fa-c2e9-4321-ae86-cea2a0750db0';
+
+  // Cache duration: 7 days in milliseconds
+  const CACHE_DURATION = 7 * 24 * 60 * 60 * 1000;
 
   useEffect(() => {
     const fetchVideos = async () => {
@@ -111,9 +119,57 @@ export default function HistoryPage() {
     });
   };
 
+  // Check if a thumbnail exists in the cache
+  const getThumbnailFromCache = (url: string): string | null => {
+    try {
+      const cacheKey = `thumbnail_${url}`;
+      const cachedData = localStorage.getItem(cacheKey);
+
+      if (!cachedData) return null;
+
+      const cachedThumbnail: CachedThumbnail = JSON.parse(cachedData);
+
+      // Check if cache has expired
+      if (Date.now() - cachedThumbnail.timestamp > CACHE_DURATION) {
+        localStorage.removeItem(cacheKey);
+        return null;
+      }
+
+      return cachedThumbnail.url;
+    } catch (error) {
+      console.error(`Error retrieving from cache:`, error);
+      return null;
+    }
+  };
+
+  // Save a thumbnail to the cache
+  const saveThumbnailToCache = (url: string, thumbnailUrl: string): void => {
+    try {
+      const cacheKey = `thumbnail_${url}`;
+      const cachedThumbnail: CachedThumbnail = {
+        url: thumbnailUrl,
+        timestamp: Date.now(),
+      };
+
+      localStorage.setItem(cacheKey, JSON.stringify(cachedThumbnail));
+    } catch (error) {
+      console.error('Error saving to cache:', error);
+    }
+  };
+
   // Function to extract a thumbnail from a video
   const extractThumbnail = (video: HTMLVideoElement, url: string) => {
     return new Promise<void>((resolve) => {
+      // First check if we have this thumbnail in cache
+      const cachedThumbnail = getThumbnailFromCache(url);
+      if (cachedThumbnail) {
+        setThumbnails((prev) => ({
+          ...prev,
+          [url]: cachedThumbnail,
+        }));
+        resolve();
+        return;
+      }
       // Set up event handlers before setting the src
       video.onloadedmetadata = () => {
         // Seek to the middle of the video
@@ -137,6 +193,9 @@ export default function HistoryPage() {
             ...prev,
             [url]: thumbnailUrl,
           }));
+
+          // Save to cache
+          saveThumbnailToCache(url, thumbnailUrl);
         }
 
         // Clean up
