@@ -4,6 +4,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import {
   checkProcessedVideoStatus,
   analyseGolfSwingLandmarks,
+  fetchExistingAnalysisResults, // New import for the function we added
 } from '@/app/actions/storage';
 import { Button } from '@/components/ui/button';
 import { useRouter } from 'next/navigation';
@@ -193,25 +194,54 @@ function AnalysisResults(): React.ReactElement {
             ? baseName.slice(0, -10) // Remove '_processed'
             : baseName;
 
-          const landmarksFileName = `landmarks/user/${cleanBaseName}_landmarks.json`;
-          debugLog(`Looking for landmarks file: ${landmarksFileName}`);
-
-          // Run analysis
+          // THIS IS THE MODIFIED PART:
+          // If coming from history, fetch the existing analysis results
+          // Otherwise, run the analysis
           setIsAnalysing(true);
           try {
-            const analysisResult = await analyseGolfSwingLandmarks({
-              fileName: landmarksFileName,
-            });
+            if (isFromHistory) {
+              // Fetch existing analysis results instead of reanalyzing
+              debugLog(
+                `Fetching existing analysis results for: ${result.fileName}`
+              );
 
-            debugLog(`Analysis result: ${JSON.stringify(analysisResult)}`);
+              const analysisResult = await fetchExistingAnalysisResults({
+                fileName: result.fileName || fileName,
+              });
 
-            if (analysisResult.error) {
-              debugLog(`Analysis error: ${analysisResult.error}`);
-              setAnalysisLoading(false);
-              setError(`Analysis error: ${analysisResult.error}`);
+              debugLog(
+                `Existing analysis result: ${JSON.stringify(analysisResult)}`
+              );
+
+              if (analysisResult.error) {
+                debugLog(
+                  `Error fetching existing analysis: ${analysisResult.error}`
+                );
+                setAnalysisLoading(false);
+                setError(`Analysis error: ${analysisResult.error}`);
+              } else {
+                setSwingAnalysisResults(analysisResult);
+                setAnalysisLoading(false);
+              }
             } else {
-              setSwingAnalysisResults(analysisResult);
-              setAnalysisLoading(false);
+              // Run new analysis for freshly recorded swings
+              const landmarksFileName = `landmarks/user/${cleanBaseName}_landmarks.json`;
+              debugLog(`Looking for landmarks file: ${landmarksFileName}`);
+
+              const analysisResult = await analyseGolfSwingLandmarks({
+                fileName: landmarksFileName,
+              });
+
+              debugLog(`Analysis result: ${JSON.stringify(analysisResult)}`);
+
+              if (analysisResult.error) {
+                debugLog(`Analysis error: ${analysisResult.error}`);
+                setAnalysisLoading(false);
+                setError(`Analysis error: ${analysisResult.error}`);
+              } else {
+                setSwingAnalysisResults(analysisResult);
+                setAnalysisLoading(false);
+              }
             }
           } catch (analysisError) {
             if (analysisError instanceof Error) {
@@ -306,37 +336,69 @@ function AnalysisResults(): React.ReactElement {
           setProcessedVideo(result);
           setVideoLoading(false);
 
-          // If video is already processed, get the analysis as well
-          const cleanBaseName = baseName.endsWith('_processed')
-            ? baseName.slice(0, -10) // Remove '_processed'
-            : baseName;
-
-          const landmarksFileName = `landmarks/user/${cleanBaseName}_landmarks.json`;
-          debugLog(
-            `Looking for landmarks file immediately: ${landmarksFileName}`
-          );
-
+          // MODIFIED: Use different approaches based on fromHistory flag
           setIsAnalysing(true);
-          analyseGolfSwingLandmarks({
-            fileName: landmarksFileName,
-          })
-            .then((analysisResult) => {
-              if (analysisResult.error) {
-                debugLog(`Analysis error: ${analysisResult.error}`);
-                setError(`Analysis error: ${analysisResult.error}`);
-              } else {
-                debugLog('Analysis successful');
-                setSwingAnalysisResults(analysisResult);
-              }
-              setAnalysisLoading(false);
-              setIsAnalysing(false);
+
+          if (isFromHistory) {
+            // For videos from history, fetch the existing analysis
+            debugLog(
+              `Fetching existing analysis for: ${result.fileName || fileName}`
+            );
+
+            fetchExistingAnalysisResults({
+              fileName: result.fileName || fileName,
             })
-            .catch((err) => {
-              debugLog(`Analysis error: ${(err as Error).message}`);
-              setError(`Analysis error: ${(err as Error).message}`);
-              setAnalysisLoading(false);
-              setIsAnalysing(false);
-            });
+              .then((analysisResult) => {
+                if (analysisResult.error) {
+                  debugLog(`Error fetching analysis: ${analysisResult.error}`);
+                  setError(`Analysis error: ${analysisResult.error}`);
+                } else {
+                  debugLog('Successfully fetched existing analysis');
+                  setSwingAnalysisResults(analysisResult);
+                }
+                setAnalysisLoading(false);
+                setIsAnalysing(false);
+              })
+              .catch((err) => {
+                debugLog(`Error fetching analysis: ${(err as Error).message}`);
+                setError(`Analysis error: ${(err as Error).message}`);
+                setAnalysisLoading(false);
+                setIsAnalysing(false);
+              });
+          } else {
+            // For fresh recordings, analyze the landmarks
+            const cleanBaseName = result.fileName
+              ? result.fileName.endsWith('_processed.mp4')
+                ? result.fileName.slice(0, -14)
+                : result.fileName.slice(0, -4)
+              : baseName.endsWith('_processed')
+                ? baseName.slice(0, -10)
+                : baseName;
+
+            const landmarksFileName = `landmarks/user/${cleanBaseName}_landmarks.json`;
+            debugLog(`Looking for landmarks file: ${landmarksFileName}`);
+
+            analyseGolfSwingLandmarks({
+              fileName: landmarksFileName,
+            })
+              .then((analysisResult) => {
+                if (analysisResult.error) {
+                  debugLog(`Analysis error: ${analysisResult.error}`);
+                  setError(`Analysis error: ${analysisResult.error}`);
+                } else {
+                  debugLog('Analysis successful');
+                  setSwingAnalysisResults(analysisResult);
+                }
+                setAnalysisLoading(false);
+                setIsAnalysing(false);
+              })
+              .catch((err) => {
+                debugLog(`Analysis error: ${(err as Error).message}`);
+                setError(`Analysis error: ${(err as Error).message}`);
+                setAnalysisLoading(false);
+                setIsAnalysing(false);
+              });
+          }
         } else {
           debugLog('Initial check - video not processed yet, starting polling');
           // Start polling if not found in initial check
