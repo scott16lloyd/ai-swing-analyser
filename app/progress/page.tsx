@@ -181,17 +181,32 @@ export default function ProgressPage() {
         const supabase = createClient();
         const { data, error } = await supabase.auth.getUser();
 
-        if (error || !data.user) {
+        if (error) {
+          console.error('Auth error:', error.message);
+          setError('Authentication error: ' + error.message);
           router.push('/sign-in');
+          setIsLoading(false);
+          return;
+        }
+
+        if (!data.user) {
+          console.log('No user found');
+          setError('No authenticated user found');
+          router.push('/sign-in');
+          setIsLoading(false);
           return;
         }
 
         // User is authenticated, we can proceed
+        console.log('User authenticated:', data.user.id);
         setUserId(data.user.id);
-        console.log(userId);
-      } catch (error) {
-        console.error('Error checking authentication:', error);
+      } catch (err) {
+        console.error('Error checking authentication:', err);
+        setError('Failed to check authentication');
         router.push('/sign-in');
+        setIsLoading(false);
+      } finally {
+        setAuthChecked(true);
       }
     };
 
