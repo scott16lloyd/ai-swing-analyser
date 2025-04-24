@@ -3,6 +3,7 @@ import React, { useRef, useState, useCallback, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Webcam from 'react-webcam';
 import { getSupportedMimeType } from '@/lib/videoUtils';
+import { createClient } from '@/utils/supabase/client';
 
 function AnalysePage() {
   // Webcam component
@@ -11,7 +12,32 @@ function AnalysePage() {
   const [capturing, setCapturing] = useState(false);
   const [recordedChunks, setRecordedChunks] = useState<Blob[]>([]);
   const [elapsedTime, setElapsedTime] = useState(0);
+  const [isLoading, setIsLoading] = useState(true);
   const router = useRouter();
+
+  // Check authentication on component mount
+  useEffect(() => {
+    const checkAuth = async () => {
+      try {
+        const supabase = createClient();
+        const { data, error } = await supabase.auth.getUser();
+
+        if (error || !data.user) {
+          // Use client-side navigation instead of server-side redirect
+          router.push('/sign-in');
+          return;
+        }
+
+        // User is authenticated, we can proceed
+        setIsLoading(false);
+      } catch (error) {
+        console.error('Error checking authentication:', error);
+        router.push('/sign-in');
+      }
+    };
+
+    checkAuth();
+  }, [router]);
 
   const handleStartCaptureClick = useCallback(() => {
     setCapturing(true);
