@@ -11,7 +11,6 @@ const BottomNavBar = () => {
 
   // Navigation items with their corresponding icons and paths
   const navItems = [
-    { name: 'Home', icon: Home, path: '/' },
     { name: 'History', icon: History, path: '/history' },
     { name: 'Analyse', icon: Camera, path: '/analyse' },
     { name: 'Coaching', icon: UserCheck, path: '/coaching' },
