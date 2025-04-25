@@ -10,6 +10,7 @@ import './globals.css';
 import { Toaster } from '@/components/ui/toaster';
 import BottomNavBar from '@/components/ui/bottom-nav';
 import { SpeedInsights } from '@vercel/speed-insights/next';
+import { Analytics } from '@vercel/analytics/react';
 
 const defaultUrl = process.env.VERCEL_URL
   ? `https://${process.env.VERCEL_URL}`
@@ -39,6 +40,7 @@ export default function RootLayout({
             <div className="flex flex-col h-screen">
               <div className="flex-1 overflow-hidden p-4">{children}</div>
               <SpeedInsights />
+              <Analytics />
             </div>
             <BottomNavBar />
           </main>

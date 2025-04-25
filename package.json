@@ -19,6 +19,7 @@
     "@radix-ui/react-toast": "^1.2.4",
     "@supabase/ssr": "latest",
     "@supabase/supabase-js": "latest",
+    "@vercel/analytics": "^1.5.0",
     "@vercel/speed-insights": "^1.2.0",
     "autoprefixer": "10.4.17",
     "aws-sdk": "^2.1691.0",
