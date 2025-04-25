@@ -9,6 +9,7 @@ import Link from 'next/link';
 import './globals.css';
 import { Toaster } from '@/components/ui/toaster';
 import BottomNavBar from '@/components/ui/bottom-nav';
+import { SpeedInsights } from '@vercel/speed-insights/next';
 
 const defaultUrl = process.env.VERCEL_URL
   ? `https://${process.env.VERCEL_URL}`
@@ -37,6 +38,7 @@ export default function RootLayout({
           <main className="min-h-screen flex flex-col items-center">
             <div className="flex flex-col h-screen">
               <div className="flex-1 overflow-hidden p-4">{children}</div>
+              <SpeedInsights />
             </div>
             <BottomNavBar />
           </main>
