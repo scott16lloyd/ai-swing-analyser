@@ -4,7 +4,14 @@ import React, { useRef, useState, useCallback, useEffect } from 'react';
 import { getSupportedMimeType } from '@/lib/videoUtils';
 import { createClient } from '@/utils/supabase/client';
 import { useRouter } from 'next/navigation';
+import Image from 'next/image';
 import Webcam from 'react-webcam';
+
+// Next.js config check
+const imageConfigCheck = () => {
+  console.log('Image configuration check');
+  // If using Image component, Next.js 13+ will automatically handle this
+};
 
 type DominantHand = 'left' | 'right';
 
@@ -196,6 +203,37 @@ function AnalysePage() {
         className="rounded-lg h-full w-auto object-cover overscroll-none"
         mirrored={true}
       />
+
+      {/* Frame Corner Indicators */}
+      {/* Top Left Corner */}
+      <div className="absolute top-8 left-8 pointer-events-none">
+        <div className="w-16 h-16 border-t-4 border-l-4 border-white rounded-tl-lg"></div>
+      </div>
+
+      {/* Silhouette image under top left corner - with cache busting and direct style */}
+      <div className="absolute top-14 left-8 pointer-events-none">
+        <img
+          src="/player-driver-silhoutte-min.png"
+          alt="Player/Driver Silhouette"
+          width={100}
+          height={160}
+        />
+      </div>
+
+      {/* Top Right Corner */}
+      <div className="absolute top-8 right-8 pointer-events-none">
+        <div className="w-16 h-16 border-t-4 border-r-4 border-white rounded-tr-lg"></div>
+      </div>
+
+      {/* Bottom Left Corner */}
+      <div className="absolute bottom-32 left-8 pointer-events-none">
+        <div className="w-16 h-16 border-b-4 border-l-4 border-white rounded-bl-lg"></div>
+      </div>
+
+      {/* Bottom Right Corner */}
+      <div className="absolute bottom-32 right-8 pointer-events-none">
+        <div className="w-16 h-16 border-b-4 border-r-4 border-white rounded-br-lg"></div>
+      </div>
 
       {/* Timer component */}
       {capturing && (
