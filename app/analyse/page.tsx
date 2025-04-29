@@ -17,6 +17,7 @@ function AnalysePage() {
   const [elapsedTime, setElapsedTime] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
   const [dominantHand, setDominantHand] = useState<DominantHand>('right');
+  const [facingMode, setFacingMode] = useState<'user' | 'environment'>('user');
   const router = useRouter();
 
   // Check authentication on component mount
@@ -46,6 +47,10 @@ function AnalysePage() {
   // Handler for changing dominant hand
   const handleDominantHandChange = useCallback((hand: DominantHand) => {
     setDominantHand(hand);
+  }, []);
+
+  const toggleCamera = useCallback(() => {
+    setFacingMode((prevMode) => (prevMode === 'user' ? 'environment' : 'user'));
   }, []);
 
   const handleStartCaptureClick = useCallback(() => {
@@ -194,7 +199,10 @@ function AnalysePage() {
         audio={false}
         ref={webcamRef}
         className="rounded-lg h-full w-auto object-cover overscroll-none"
-        mirrored={true}
+        mirrored={facingMode === 'user'}
+        videoConstraints={{
+          facingMode: facingMode,
+        }}
       />
 
       {/* Frame Corner Indicators */}
@@ -243,6 +251,40 @@ function AnalysePage() {
       </div>
       {/* Record button components */}
       <div className="absolute bottom-24 left-0 right-0 flex justify-center pointer-events-auto">
+        {/* Camera toggle button */}
+        <button
+          onClick={toggleCamera}
+          className="relative flex items-center justify-center w-16 h-16 rounded-full transition-colors duration-300 border-2 bg-white border-gray-300 mr-2"
+          aria-label={
+            facingMode === 'user'
+              ? 'Switch to back camera'
+              : 'Switch to front camera'
+          }
+          type="button"
+          style={{ touchAction: 'manipulation' }}
+          disabled={capturing}
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="black"
+            className="w-8 h-8"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"
+            />
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M15 13a3 3 0 11-6 0 3 3 0 016 0z"
+            />
+          </svg>
+        </button>
         {capturing ? (
           <button
             onClick={handleStopCaptureClick}
