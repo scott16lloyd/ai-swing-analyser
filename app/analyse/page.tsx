@@ -1,9 +1,12 @@
 'use client';
+import { DominantHandSelector } from '@/components/dominant-hand-selector';
 import React, { useRef, useState, useCallback, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
-import Webcam from 'react-webcam';
 import { getSupportedMimeType } from '@/lib/videoUtils';
 import { createClient } from '@/utils/supabase/client';
+import { useRouter } from 'next/navigation';
+import Webcam from 'react-webcam';
+
+type DominantHand = 'left' | 'right';
 
 function AnalysePage() {
   // Webcam component
@@ -13,6 +16,7 @@ function AnalysePage() {
   const [recordedChunks, setRecordedChunks] = useState<Blob[]>([]);
   const [elapsedTime, setElapsedTime] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
+  const [dominantHand, setDominantHand] = useState<DominantHand>('right');
   const router = useRouter();
 
   // Check authentication on component mount
@@ -38,6 +42,11 @@ function AnalysePage() {
 
     checkAuth();
   }, [router]);
+
+  // Handler for changing dominant hand
+  const handleDominantHandChange = useCallback((hand: DominantHand) => {
+    setDominantHand(hand);
+  }, []);
 
   const handleStartCaptureClick = useCallback(() => {
     setCapturing(true);
@@ -122,6 +131,10 @@ function AnalysePage() {
         // First update UI state so the button appears disabled
         setCapturing(false);
 
+        // Store dominantHand in sessionStorage
+        sessionStorage.setItem('dominantHand', dominantHand);
+        console.log(`Stored dominant hand: ${dominantHand}`);
+
         // Then stop the recorder
         mediaRecorderRef.current.stop();
         console.log('MediaRecorder stopped');
@@ -132,7 +145,7 @@ function AnalysePage() {
         console.error('Error stopping recording:', err);
       }
     }
-  }, [mediaRecorderRef, setCapturing]);
+  }, [mediaRecorderRef, setCapturing, dominantHand]);
 
   const handleDownload = useCallback(() => {
     if (recordedChunks.length) {
@@ -183,12 +196,20 @@ function AnalysePage() {
         className="rounded-lg h-full w-auto object-cover overscroll-none"
         mirrored={true}
       />
+
       {/* Timer component */}
       {capturing && (
         <div className="absolute top-4 right-4 bg-red-500 bg-opacity-90 text-white px-3 py-1 rounded-full text-md m-2">
           {formatTime(elapsedTime)}
         </div>
       )}
+      <div className="absolute bottom-40 pb-2 left-0 right-0 flex justify-center pointer-events-auto">
+        <DominantHandSelector
+          value={dominantHand}
+          onChange={handleDominantHandChange}
+          className="max-w-sm"
+        />
+      </div>
       {/* Record button components */}
       <div className="absolute bottom-24 left-0 right-0 flex justify-center pointer-events-auto">
         {capturing ? (
