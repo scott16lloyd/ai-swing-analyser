@@ -92,9 +92,6 @@ function PlayerProgressChart({ data }: PlayerProgressChartProps) {
 
   // Transform data for the chart and add formatted dates
   const chartData = sortedData.map((item) => {
-    // Check all possible properties where the date might be stored
-    console.log('Raw item data:', JSON.stringify(item));
-
     let dateString = '';
     // Prioritize timestamp property
     if (typeof item.timestamp === 'string' && item.timestamp) {
@@ -110,7 +107,12 @@ function PlayerProgressChart({ data }: PlayerProgressChartProps) {
       if (dateString) {
         const date = new Date(dateString);
         if (!isNaN(date.getTime())) {
-          formattedDate = date.toLocaleDateString();
+          // Create a more readable format for the date
+          formattedDate = new Date(dateString).toLocaleDateString(undefined, {
+            year: 'numeric',
+            month: 'short',
+            day: 'numeric',
+          });
         }
       }
     } catch (error) {
@@ -144,6 +146,13 @@ function PlayerProgressChart({ data }: PlayerProgressChartProps) {
             margin={{ top: 10, right: 10, left: -30, bottom: 20 }}
           >
             <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
+            <XAxis
+              dataKey="formattedDate"
+              tick={{ fontSize: 12 }}
+              angle={-45}
+              textAnchor="end"
+              height={70}
+            />
             <YAxis domain={[0, 100]} tick={{ fontSize: 12 }} />
             <Tooltip
               contentStyle={{
@@ -162,15 +171,20 @@ function PlayerProgressChart({ data }: PlayerProgressChartProps) {
                 marginBottom: '5px',
               }}
               formatter={(value, name) => {
+                // Only return a value for score, filtering out prediction completely
                 if (name === 'score') return [`${value}`, 'Score'];
-                if (name === 'prediction' && typeof value === 'string')
-                  return [
-                    value.charAt(0).toUpperCase() + value.slice(1),
-                    'Rating',
-                  ];
-                return [value, name];
+                // For any other potential dataKey, use default behavior
+                if (name !== 'prediction') return [value, name];
+                // Return false explicitly for prediction to hide it
+                return false;
               }}
-              labelFormatter={(label) => `Date: ${label}`}
+              labelFormatter={(_, payload) => {
+                // Use the formattedDate from the payload if available
+                if (payload && payload.length > 0 && payload[0].payload) {
+                  return `Date: ${payload[0].payload.formattedDate}`;
+                }
+                return 'Unknown Date';
+              }}
             />
             <Line
               type="monotone"
@@ -182,13 +196,14 @@ function PlayerProgressChart({ data }: PlayerProgressChartProps) {
               name="Score"
               isAnimationActive={true}
             />
-            {/* Add a fake line for the prediction legend and use custom dots for colors */}
+            {/* Color-coded dots for prediction types with hide=true to prevent tooltip */}
             <Line
               type="monotone"
               dataKey="score"
               stroke="transparent"
-              name="Rating"
+              name="prediction"
               isAnimationActive={false}
+              hide={true} // Hide this line from the tooltip and legend
               dot={(props) => {
                 const { cx, cy, payload, index } = props;
                 const prediction = (payload as SwingData).prediction;
@@ -206,6 +221,9 @@ function PlayerProgressChart({ data }: PlayerProgressChartProps) {
                   </svg>
                 );
               }}
+            />
+            <Legend
+              payload={[{ value: 'Score', type: 'line', color: '#3b82f6' }]}
             />
           </LineChart>
         </ResponsiveContainer>
