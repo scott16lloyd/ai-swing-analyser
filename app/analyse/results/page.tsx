@@ -32,6 +32,8 @@ interface SwingAnalysisResult {
   confidence: number;
   feedback: string[];
   error?: string;
+  score?: number; // Keep as optional for type safety
+  timestamp?: string; // Keep as optional for type safety
 }
 
 function AnalysisResults(): React.ReactElement {
@@ -354,7 +356,29 @@ function AnalysisResults(): React.ReactElement {
                   setError(`Analysis error: ${analysisResult.error}`);
                 } else {
                   debugLog('Successfully fetched existing analysis');
-                  setSwingAnalysisResults(analysisResult);
+                  debugLog(
+                    `Analysis result full object: ${JSON.stringify(analysisResult)}`
+                  );
+
+                  // Using a type assertion to work with the result more easily
+                  const result = analysisResult as any;
+
+                  // Check if score exists
+                  if (result.score === undefined) {
+                    debugLog('Score property missing, adding fallback score');
+                    // Add score based on prediction and confidence
+                    if (result.prediction === 'good') {
+                      result.score = Math.round(70 + result.confidence * 30);
+                    } else {
+                      result.score = Math.round(30 + result.confidence * 40);
+                    }
+                    debugLog(`Added missing score: ${result.score}`);
+                  } else {
+                    debugLog(`Existing score found: ${result.score}`);
+                  }
+
+                  // Now set the state with the result
+                  setSwingAnalysisResults(result);
                 }
                 setAnalysisLoading(false);
                 setIsAnalysing(false);
@@ -387,7 +411,25 @@ function AnalysisResults(): React.ReactElement {
                   setError(`Analysis error: ${analysisResult.error}`);
                 } else {
                   debugLog('Analysis successful');
-                  setSwingAnalysisResults(analysisResult);
+
+                  // Using a type assertion to work with the result more easily
+                  const result = analysisResult as any;
+
+                  // Check if score exists
+                  if (result.score === undefined) {
+                    debugLog('Score property missing, adding fallback score');
+                    // Add score based on prediction and confidence
+                    if (result.prediction === 'good') {
+                      result.score = Math.round(70 + result.confidence * 30);
+                    } else {
+                      result.score = Math.round(30 + result.confidence * 40);
+                    }
+                    debugLog(`Added missing score: ${result.score}`);
+                  } else {
+                    debugLog(`Existing score found: ${result.score}`);
+                  }
+
+                  setSwingAnalysisResults(result);
                 }
                 setAnalysisLoading(false);
                 setIsAnalysing(false);
@@ -583,12 +625,34 @@ function AnalysisResults(): React.ReactElement {
               <div className="mt-4 text-left bg-gray-900 p-4 rounded-lg max-w-md mx-auto">
                 <div className="flex justify-between items-center mb-2">
                   <h3 className="text-xl font-bold">Swing Analysis</h3>
+
                   <div
-                    className={`px-3 py-1 rounded-full ${swingAnalysisResults.prediction === 'good' ? 'bg-green-900 text-green-200' : 'bg-amber-900 text-amber-200'}`}
+                    className={`px-3 py-1 rounded-full flex items-center ${swingAnalysisResults.prediction === 'good' ? 'bg-green-900 text-green-200' : 'bg-amber-900 text-amber-200'}`}
                   >
-                    {swingAnalysisResults.prediction === 'good'
-                      ? 'Good Swing'
-                      : 'Needs Work'}
+                    <span className="mr-2">
+                      {swingAnalysisResults.prediction === 'good'
+                        ? 'Good Swing'
+                        : 'Needs Work'}
+                    </span>
+
+                    {/* Always show score circle with enhanced visibility */}
+                    <div className="flex items-center justify-center w-8 h-8 bg-white bg-opacity-20 rounded-full text-sm font-bold border border-white border-opacity-30">
+                      {(() => {
+                        // Using an IIFE to contain the logic and avoid TypeScript errors
+                        if (!swingAnalysisResults) return '-';
+
+                        // Using type assertion to bypass TypeScript error
+                        const score = (swingAnalysisResults as any).score;
+
+                        if (score === undefined || score === null) return '-';
+
+                        return typeof score === 'number'
+                          ? score
+                          : Number(score) || Number(score) === 0
+                            ? Number(score)
+                            : '-';
+                      })()}
+                    </div>
                   </div>
                 </div>
 
