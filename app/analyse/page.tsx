@@ -4,14 +4,7 @@ import React, { useRef, useState, useCallback, useEffect } from 'react';
 import { getSupportedMimeType } from '@/lib/videoUtils';
 import { createClient } from '@/utils/supabase/client';
 import { useRouter } from 'next/navigation';
-import Image from 'next/image';
 import Webcam from 'react-webcam';
-
-// Next.js config check
-const imageConfigCheck = () => {
-  console.log('Image configuration check');
-  // If using Image component, Next.js 13+ will automatically handle this
-};
 
 type DominantHand = 'left' | 'right';
 
