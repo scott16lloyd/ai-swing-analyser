@@ -358,9 +358,11 @@ export async function standardTrimVideo(
   canvas: HTMLCanvasElement,
   ctx: CanvasRenderingContext2D,
   startTime: number,
-  endTime: number
+  endTime: number,
+  flipHorizontal: boolean = false
 ): Promise<Blob> {
   console.log('Using standard trim approach');
+  console.log(`Horizontal flip: ${flipHorizontal ? 'enabled' : 'disabled'}`);
 
   // Get high quality MIME type
   const mimeType = getHighQualityMimeType();
@@ -418,9 +420,23 @@ export async function standardTrimVideo(
         return;
       }
 
-      // Draw frame to canvas
+      // Draw frame to canvas with horizontal flipping if needed
       try {
-        ctx.drawImage(sourceVideo, 0, 0, canvas.width, canvas.height);
+        if (flipHorizontal) {
+          ctx.save();
+          // Set up horizontal flip transformation
+          ctx.scale(-1, 1); // Flip horizontally
+          ctx.translate(-canvas.width, 0); // Move back to current position
+
+          // Draw flipped image
+          ctx.drawImage(sourceVideo, 0, 0, canvas.width, canvas.height);
+
+          // Restore the context state
+          ctx.restore();
+        } else {
+          // Draw the image normally
+          ctx.drawImage(sourceVideo, 0, 0, canvas.width, canvas.height);
+        }
         frameCount++;
       } catch (e) {
         console.error('Error drawing frame:', e);

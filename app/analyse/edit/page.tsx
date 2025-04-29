@@ -9,6 +9,8 @@ import { uploadVideoToGCS, generateSignedUrl } from '@/app/actions/storage';
 import { standardTrimVideo } from '@/lib/videoUtils';
 import { createClient } from '@/utils/supabase/client';
 
+type DominantHand = 'left' | 'right';
+
 function EditPage() {
   const [videoSrc, setVideoSrc] = useState<string | null>(null);
   const [videoDuration, setVideoDuration] = useState(0);
@@ -26,6 +28,7 @@ function EditPage() {
   const [uploadedVideoUrl, setUploadedVideoUrl] = useState<string | null>(null);
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [authChecked, setAuthChecked] = useState(false);
+  const [dominantHand, setDominantHand] = useState<DominantHand>('right');
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -63,6 +66,14 @@ function EditPage() {
     console.log(message);
     setMobileDebugLogs((prev) => [message, ...prev].slice(0, 20));
   }, []);
+
+  useEffect(() => {
+    const storedHand = sessionStorage.getItem('dominantHand') as DominantHand;
+    if (storedHand) {
+      setDominantHand(storedHand);
+      mobileLog(`Retrieved dominant hand: ${storedHand}`);
+    }
+  }, [mobileLog]);
 
   // Get current logged in user
   const getCurrentUser = useCallback(async () => {
@@ -602,13 +613,32 @@ function EditPage() {
         return;
       }
 
+      // Get dominant hand from state
+      const needsFlipping = dominantHand === 'left';
+      mobileLog(
+        `Video needs horizontal flipping: ${needsFlipping ? 'Yes' : 'No'}`
+      );
+
+      // Add flipping info to metadata
+      const metadata = {
+        duration: trimDuration.toString(),
+        originalStart: startTime.toString(),
+        originalEnd: endTime.toString(),
+        trimmed: 'true',
+        width: canvas.width.toString(),
+        height: canvas.height.toString(),
+        dominantHand: dominantHand,
+        flipped: needsFlipping ? 'true' : 'false',
+      };
+
       // Call the standardTrimVideo function
       const trimmedBlob = await standardTrimVideo(
         sourceVideo,
         canvas,
         ctx,
         startTime,
-        endTime
+        endTime,
+        needsFlipping
       );
 
       updateProgress(30);
@@ -655,14 +685,7 @@ function EditPage() {
       const { url, publicUrl } = await generateSignedUrl({
         filename: fullPath,
         contentType: 'video/mp4',
-        metadata: {
-          duration: trimDuration.toString(),
-          originalStart: startTime.toString(),
-          originalEnd: endTime.toString(),
-          trimmed: 'true',
-          width: canvas.width.toString(),
-          height: canvas.height.toString(),
-        },
+        metadata: metadata,
       });
 
       // Read the compressed file
