@@ -590,7 +590,6 @@ function AnalysisResults(): React.ReactElement {
                 className="absolute top-4 left-4 text-sm flex items-center"
               >
                 <ArrowLeft className="mr-1" size={16} />
-                Back to History
               </Button>
             )}
 
@@ -669,7 +668,9 @@ function AnalysisResults(): React.ReactElement {
                       ) : /* Drill suggestions get GraduationCap icon */
                       item.startsWith('Focus on') ||
                         item.startsWith('Initiate') ||
-                        item.startsWith('Practice') ? (
+                        item.startsWith('Work on') ||
+                        item.startsWith('Practice') ||
+                        item.startsWith('Allow your') ? (
                         <>
                           <GraduationCap
                             className="inline-block mr-2"
